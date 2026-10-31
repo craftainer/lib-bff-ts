@@ -43,12 +43,27 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
     "@types/node": "24.19.2",
+    "@types/oidc-provider": "9.13.1",
     "@vitest/coverage-v8": "5.0.5",
+    "oidc-provider": "9.13.3",
     "oxlint": "1.89.0",
     "prettier": "3.9.10",
     "publint": "0.3.25",
     "tsdown": "0.23.1",
     "typescript": "6.0.3",
     "vitest": "5.0.5"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/formbody": "^9.0.1",
+    "@fastify/rate-limit": "^11.2.1",
+    "@fastify/reply-from": "^12.8.0",
+    "@fastify/static": "^10.1.8",
+    "fastify": "^5.12.7",
+    "fastify-plugin": "^6.0.1",
+    "iovalkey": "^0.4.0",
+    "jose": "^6.2.14",
+    "openid-client": "^6.8.8",
+    "zod": "^4.6.7"
   }
 }
