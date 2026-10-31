@@ -69,6 +69,12 @@ unstarted instance. These choices are settled:
   loading and logging. A target that does not start with exactly one `/`
   (`//bff/x`, absolute-form) or has malformed escapes is guarded like
   `/api` (fail closed).
+- **Session cookie hygiene.** A cookie that is not a 43-character base64url
+  ID never reaches a store key, and the cookie is cleared when its session
+  is unknown or expired. Error bodies carry the library's own codes, or
+  `rate_limited` / `request_failed`; Fastify's `FST_*` codes are not exposed.
+- **Upstream names.** `BFF_UPSTREAMS` becomes a prototype-less object and
+  lookups use `Object.hasOwn`, so `constructor` is not an upstream.
 - **Roles keys.** Roles are built without a prototype; a client named
   `realm` (the realm-roles key) or `__proto__` is ignored with a warning.
 - **Public origin.** `PUBLIC_ORIGIN`, never the `Host` header, derives
@@ -81,17 +87,38 @@ unstarted instance. These choices are settled:
   exempt: `GET /bff/login` and `GET /bff/callback` (top-level
   navigations, protected by the login transaction) and
   `POST /bff/backchannel-logout` (authenticated by its signed token).
+- **Atomic store writes.** `KvClient.multi` applies a list of operations in
+  one Valkey `MULTI`/`EXEC` (in memory, one synchronous tick). `put` writes
+  the session and adds it to its `sub:` and `sid:` index sets in one
+  transaction, `destroy` deletes it and removes it from both, so a session
+  is never live without its index entries and back-channel logout finds every
+  session. The index sets expire by their own TTL (the absolute session
+  lifetime, renewed on each add); a logout never deletes a whole set, so a
+  session that logged in meanwhile keeps its entry. `replace` is a `MULTI`
+  holding one `SET ... XX PX`: Valkey checks existence and writes in a single
+  step, which is simpler than `WATCH` and has no retry loop.
+- **Plaintext store URLs.** The store holds access, refresh and ID tokens.
+  With `NODE_ENV=production`, `loadConfig` rejects `redis://` and
+  `valkey://` unless `SESSION_STORE_ALLOW_PLAINTEXT=true` (localhost or a
+  sidecar on a private network); `rediss://` and `valkeys://` are always
+  accepted.
 - **Refresh.** The BFF refreshes access tokens itself, under the
-  per-session lock (30 s, longer than the IdP request timeout) so
+  per-session lock (30 s) so
   concurrent requests refresh once, which suits refresh-token rotation. Only
   an OAuth `invalid_grant` answer destroys the session and answers 401 (the
   SPA navigates to `/bff/login`). Every other failure (another OAuth error
   such as `invalid_client`, a 5xx, `server_error`, `temporarily_unavailable`,
   a network or discovery failure) keeps the session and answers 503
-  `idp_unavailable`, so an IdP blip does not log users out. The refreshed
+  `idp_unavailable`, so an IdP blip does not log users out. Invariant:
+  every IdP request (`OIDC_TIMEOUT_SECONDS`, default 10 s, applied to the
+  openid-client configuration) ends before the 30 s lock TTL, so a refresh
+  never outlives its lock and no renewal is needed; `loadConfig` rejects a
+  timeout that is not below the lock TTL. The refreshed
   session is written with `SET ... XX PX` (`SessionStore.replace`): when a
   logout or back-channel logout removed the session meanwhile, nothing is
-  written and the answer is 401, so a logout is never undone.
+  written and the answer is 401, so a logout is never undone. The rotated
+  refresh token the IdP just issued was never stored, so it is revoked
+  (RFC 7009) at once.
 - **Logout.** `POST /bff/logout` destroys the session, revokes the refresh
   token at the IdP (RFC 7009) when discovery advertises
   `revocation_endpoint`, and returns `{logoutUrl}` (`end_session_endpoint`
@@ -102,7 +129,8 @@ unstarted instance. These choices are settled:
   its session). `POST /bff/backchannel-logout` implements OIDC Back-Channel
   Logout 1.0: it verifies the logout token with `jose` (`typ`, signature,
   `iss`, `aud`, `iat`/`exp`/`jti`, the event, `sid` or `sub`, no `nonce`),
-  rejects a replayed `jti`, and ends the sessions of the `sid` (or of the
+  rejects a replayed `jti` (the claim is released again when ending the
+  sessions fails, so the IdP's retry gets through), and ends the sessions of the `sid` (or of the
   `sub` when there is no `sid`). It has a 16 KB body limit and deliberately
   no rate limit: the IdP is the caller, throttling would drop real logouts,
   and the signed token authenticates the request.

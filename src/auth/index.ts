@@ -14,12 +14,11 @@ import {
   setSessionCookie,
 } from "../session.ts";
 import { verifyLogoutToken } from "./backchannel.ts";
+import { revokeRefreshToken } from "./oidc.ts";
 import { profileOf } from "./claims.ts";
 import { extractRoles } from "./roles.ts";
 import { safeReturnTo } from "./return-to.ts";
 import { randomId } from "./store.ts";
-
-const REVOCATION_TIMEOUT_MS = 2000;
 
 const logoutBodySchema = z.object({ logout_token: z.string().min(1) });
 
@@ -55,7 +54,7 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (request.url.startsWith("/bff/")) {
+    if (pathOf(request.url).startsWith("/bff/")) {
       void reply.header("Cache-Control", "no-store");
     }
   });
@@ -69,39 +68,19 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
     return reply.code(503).send({ error: "idp_unavailable" });
   }
 
-  /**
-   * Best-effort RFC 7009 revocation of the refresh token on an explicit
-   * logout, when the IdP advertises `revocation_endpoint`. Awaited for at
-   * most 2 s; a failure is logged and never blocks the logout.
-   */
-  async function revokeRefreshToken(
+  /** Best-effort revocation on an explicit logout; a failure is logged, never thrown. */
+  async function revoke(
     request: FastifyRequest,
     configuration: client.Configuration,
     refreshToken: string,
     sub: string,
   ): Promise<void> {
-    if (configuration.serverMetadata().revocation_endpoint === undefined) {
-      return;
-    }
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        client.tokenRevocation(configuration, refreshToken, {
-          token_type_hint: "refresh_token",
-        }),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            reject(new Error("revocation timed out"));
-          }, REVOCATION_TIMEOUT_MS);
-        }),
-      ]);
-    } catch (error) {
+    const failure = await revokeRefreshToken(configuration, refreshToken);
+    if (failure !== undefined) {
       securityLog(request.log, "token_revocation_failed", {
         sub,
-        reason: (error as Error).name,
+        reason: failure.name,
       });
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -246,7 +225,7 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
       request.log.warn({ err: error }, "no IdP logout URL");
     }
     if (configuration !== undefined && refreshToken !== null) {
-      await revokeRefreshToken(request, configuration, refreshToken, sub);
+      await revoke(request, configuration, refreshToken, sub);
     }
     return reply.send({ logoutUrl });
   });
@@ -305,10 +284,17 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
       if (!(await app.bffStore.claimOnce(`jti:${logout.jti}`, 600))) {
         return reject("logout token replayed");
       }
-      const ended =
-        logout.by === "sid"
-          ? await app.bffStore.destroyBySid(logout.value)
-          : await app.bffStore.destroyBySub(logout.value);
+      let ended: number;
+      try {
+        ended =
+          logout.by === "sid"
+            ? await app.bffStore.destroyBySid(logout.value)
+            : await app.bffStore.destroyBySub(logout.value);
+      } catch (error) {
+        // Let the IdP's retry of the same token through instead of a replay rejection.
+        await app.bffStore.releaseClaim(`jti:${logout.jti}`);
+        throw error;
+      }
       securityLog(request.log, "backchannel_logout", {
         sub: logout.sub,
         sessions: ended,

@@ -27,6 +27,16 @@ Targets that are measurable:
   token's lifetime when the IdP reports it.
 - Tokens, cookies, session IDs and authorization codes appear in no log
   line.
+- A session is written together with its back-channel-logout index entries
+  in one atomic Valkey transaction, and a token refresh never undoes a
+  logout (`SET ... XX`).
+- The session store is reached over TLS in production: with
+  `NODE_ENV=production`, `loadConfig` rejects a plaintext `redis://` or
+  `valkey://` `SESSION_STORE_URL` unless `SESSION_STORE_ALLOW_PLAINTEXT=true`
+  (for localhost or a sidecar on a private network). `rediss://` and
+  `valkeys://` are always accepted. The store holds access, refresh and ID
+  tokens, so its network path and its snapshots need the protection ASVS
+  10.1.1 expects (test: `config.test.ts` "SESSION_STORE_URL in production").
 
 | ASVS 5.0            | Requirement (short)                                                                 | Where                                                      | Test                                                                                                                |
 | ------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |

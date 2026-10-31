@@ -1,5 +1,20 @@
 import { Valkey } from "iovalkey";
 
+/** One operation of an atomic {@link KvClient.multi}. Every key written has a TTL. */
+export type KvOp =
+  | {
+      op: "set";
+      key: string;
+      value: string;
+      ttlMs: number;
+      /** SET ... XX: only when the key exists. */
+      onlyIfExists?: boolean;
+    }
+  | { op: "del"; key: string }
+  /** Adds a member to a set and (re)sets the set's TTL. */
+  | { op: "sadd"; key: string; member: string; ttlMs: number }
+  | { op: "srem"; key: string; member: string };
+
 /**
  * The minimal key-value surface the session store needs. Every key has a
  * TTL. The Valkey implementation wraps `iovalkey`; the in-memory one backs
@@ -22,9 +37,14 @@ export interface KvClient {
   del(...keys: string[]): Promise<number>;
   /** Returns false when the key does not exist. */
   pexpire(key: string, ttlMs: number): Promise<boolean>;
-  sadd(key: string, member: string): Promise<void>;
-  srem(key: string, member: string): Promise<void>;
   smembers(key: string): Promise<string[]>;
+  /**
+   * Applies every op in one atomic step (Valkey `MULTI`/`EXEC`; in memory,
+   * one synchronous tick): all of them take effect or none does. Returns one
+   * result per op: `set` a boolean (false when `onlyIfExists` and the key is
+   * missing), `del`, `sadd` and `srem` a count. Rejects when any op fails.
+   */
+  multi(ops: KvOp[]): Promise<unknown[]>;
   /** Deletes the key only when it still holds `value` (lock release). Returns whether it deleted. */
   delIfEquals(key: string, value: string): Promise<boolean>;
   ping(): Promise<void>;
@@ -59,24 +79,38 @@ export class MemoryKv implements KvClient {
     return Promise.resolve(this.#live(key)?.value ?? null);
   }
 
-  set(
+  #set(
     key: string,
     value: string,
     opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
-  ): Promise<boolean> {
+  ): boolean {
     const exists = this.#live(key) !== undefined;
     if (
       (opts.nx === true && exists) ||
       (opts.onlyIfExists === true && !exists)
     ) {
-      return Promise.resolve(false);
+      return false;
     }
     this.#entries.set(key, {
       value,
       members: undefined,
       expiresAt: this.#now() + opts.ttlMs,
     });
-    return Promise.resolve(true);
+    return true;
+  }
+
+  #del(key: string): number {
+    const existed = this.#live(key) !== undefined;
+    this.#entries.delete(key);
+    return existed ? 1 : 0;
+  }
+
+  set(
+    key: string,
+    value: string,
+    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
+  ): Promise<boolean> {
+    return Promise.resolve(this.#set(key, value, opts));
   }
 
   async getDel(key: string): Promise<string | null> {
@@ -86,14 +120,9 @@ export class MemoryKv implements KvClient {
   }
 
   del(...keys: string[]): Promise<number> {
-    let count = 0;
-    for (const key of keys) {
-      if (this.#live(key) !== undefined) {
-        count += 1;
-      }
-      this.#entries.delete(key);
-    }
-    return Promise.resolve(count);
+    return Promise.resolve(
+      keys.reduce((count, key) => count + this.#del(key), 0),
+    );
   }
 
   pexpire(key: string, ttlMs: number): Promise<boolean> {
@@ -105,23 +134,34 @@ export class MemoryKv implements KvClient {
     return Promise.resolve(true);
   }
 
-  sadd(key: string, member: string): Promise<void> {
-    const existing = this.#live(key);
-    if (existing?.members === undefined) {
-      this.#entries.set(key, {
-        value: undefined,
-        members: new Set([member]),
-        expiresAt: undefined,
-      });
-    } else {
-      existing.members.add(member);
-    }
-    return Promise.resolve();
-  }
-
-  srem(key: string, member: string): Promise<void> {
-    this.#live(key)?.members?.delete(member);
-    return Promise.resolve();
+  multi(ops: KvOp[]): Promise<unknown[]> {
+    // No await between the ops: nothing else runs in the middle.
+    return Promise.resolve(
+      ops.map((op): unknown => {
+        switch (op.op) {
+          case "set":
+            return this.#set(op.key, op.value, op);
+          case "del":
+            return this.#del(op.key);
+          case "sadd": {
+            const existing = this.#live(op.key);
+            const members = existing?.members ?? new Set<string>();
+            const added = members.has(op.member) ? 0 : 1;
+            members.add(op.member);
+            this.#entries.set(op.key, {
+              value: undefined,
+              members,
+              expiresAt: this.#now() + op.ttlMs,
+            });
+            return added;
+          }
+          case "srem":
+            return this.#live(op.key)?.members?.delete(op.member) === true
+              ? 1
+              : 0;
+        }
+      }),
+    );
   }
 
   smembers(key: string): Promise<string[]> {
@@ -189,12 +229,52 @@ export class ValkeyKv implements KvClient {
     return (await this.#client.pexpire(key, ttlMs)) === 1;
   }
 
-  async sadd(key: string, member: string): Promise<void> {
-    await this.#client.sadd(key, member);
-  }
-
-  async srem(key: string, member: string): Promise<void> {
-    await this.#client.srem(key, member);
+  async multi(ops: KvOp[]): Promise<unknown[]> {
+    const tx = this.#client.multi();
+    // Index of each op's first command in the EXEC reply (sadd queues two).
+    const first: number[] = [];
+    let queued = 0;
+    for (const op of ops) {
+      first.push(queued);
+      switch (op.op) {
+        case "set": {
+          const px = Math.max(1, Math.floor(op.ttlMs));
+          if (op.onlyIfExists === true) {
+            tx.set(op.key, op.value, "PX", px, "XX");
+          } else {
+            tx.set(op.key, op.value, "PX", px);
+          }
+          queued += 1;
+          break;
+        }
+        case "del":
+          tx.del(op.key);
+          queued += 1;
+          break;
+        case "sadd":
+          tx.sadd(op.key, op.member);
+          tx.pexpire(op.key, Math.max(1, Math.floor(op.ttlMs)));
+          queued += 2;
+          break;
+        case "srem":
+          tx.srem(op.key, op.member);
+          queued += 1;
+          break;
+      }
+    }
+    const replies = await tx.exec();
+    if (replies === null) {
+      throw new Error("MULTI aborted");
+    }
+    for (const [error] of replies) {
+      if (error !== null) {
+        throw error;
+      }
+    }
+    return ops.map((op, i) => {
+      const reply = (replies[first[i] as number] as [unknown, unknown])[1];
+      return op.op === "set" ? reply === "OK" : reply;
+    });
   }
 
   smembers(key: string): Promise<string[]> {

@@ -70,6 +70,7 @@ describe("loadConfig", () => {
     const config = loadConfig({
       ...base,
       NODE_ENV: "production",
+      SESSION_STORE_ALLOW_PLAINTEXT: "true",
       BFF_PORT: "9000",
       BFF_HOST: "127.0.0.1",
       BFF_STATIC_DIR: "/srv/spa",
@@ -189,7 +190,12 @@ describe("loadConfig", () => {
       "OIDC_DISCOVERY_URL: must be https (set OIDC_ALLOW_INSECURE=true for development)",
     );
     expect(
-      issues({ ...base, NODE_ENV: "production", OIDC_ALLOW_INSECURE: "true" }),
+      issues({
+        ...base,
+        NODE_ENV: "production",
+        SESSION_STORE_ALLOW_PLAINTEXT: "true",
+        OIDC_ALLOW_INSECURE: "true",
+      }),
     ).toContain("OIDC_ALLOW_INSECURE: refused when NODE_ENV=production");
   });
 
@@ -237,6 +243,7 @@ describe("loadConfig", () => {
         ...base,
         PUBLIC_ORIGIN: "http://localhost:3000",
         NODE_ENV: "production",
+        SESSION_STORE_ALLOW_PLAINTEXT: "true",
       })[0],
     ).toContain("must be https");
   });
@@ -347,6 +354,7 @@ describe("loadConfig", () => {
       issues({
         ...base,
         NODE_ENV: "production",
+        SESSION_STORE_ALLOW_PLAINTEXT: "true",
         SECURITY_TXT_CONTACT: "mailto:a@b.c",
       }),
     ).toContain(
@@ -355,5 +363,37 @@ describe("loadConfig", () => {
     expect(
       issues({ ...base, CHANGE_PASSWORD_URL: "http://idp/account" }),
     ).toContain("CHANGE_PASSWORD_URL: must be an https URL");
+  });
+});
+
+describe("SESSION_STORE_URL in production", () => {
+  const prod = { ...base, NODE_ENV: "production" };
+
+  it("refuses plaintext redis:// and valkey:// unless explicitly allowed", () => {
+    for (const url of ["redis://valkey:6379", "valkey://valkey:6379"]) {
+      expect(
+        issues({ ...prod, SESSION_STORE_URL: url }).join("\n"),
+        url,
+      ).toContain("SESSION_STORE_URL: plaintext");
+      expect(
+        loadConfig({
+          ...prod,
+          SESSION_STORE_URL: url,
+          SESSION_STORE_ALLOW_PLAINTEXT: "true",
+        }).session.storeUrl,
+      ).toBe(url);
+    }
+  });
+
+  it("always accepts rediss:// and valkeys://, and plaintext outside production", () => {
+    for (const url of ["rediss://valkey:6379", "valkeys://valkey:6379"]) {
+      expect(
+        loadConfig({ ...prod, SESSION_STORE_URL: url }).session.storeUrl,
+      ).toBe(url);
+    }
+    expect(
+      loadConfig({ ...base, SESSION_STORE_URL: "redis://localhost:6379" })
+        .session.storeUrl,
+    ).toBe("redis://localhost:6379");
   });
 });

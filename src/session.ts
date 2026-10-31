@@ -5,7 +5,11 @@ import * as client from "openid-client";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { BffConfig } from "./config.ts";
 import { isAnomalousTarget, pathOf, securityLog } from "./log.ts";
-import { createOidcClient, type OidcClient } from "./auth/oidc.ts";
+import {
+  createOidcClient,
+  revokeRefreshToken,
+  type OidcClient,
+} from "./auth/oidc.ts";
 import {
   createValkeySessionStore,
   type LoginTransaction,
@@ -190,6 +194,18 @@ function createSession(
         sessionTtlSeconds(config, next, now) * 1000,
       ))
     ) {
+      // Logged out meanwhile: the rotated refresh token was never stored, so
+      // revoke it here or it would outlive the logout at the IdP.
+      const failure = await revokeRefreshToken(
+        await app.bffOidc.configuration(),
+        next.refreshToken as string,
+      );
+      if (failure !== undefined) {
+        securityLog(log, "token_revocation_failed", {
+          sub: d.sub,
+          reason: failure.name,
+        });
+      }
       throw new BffHttpError(401, "session_expired");
     }
     return next;
@@ -235,7 +251,10 @@ function createSession(
       return data;
     },
     async accessTokenFor(upstream: string): Promise<string> {
-      const target = config.upstreams[upstream];
+      // Own properties only: `constructor` and friends are not upstreams.
+      const target = Object.hasOwn(config.upstreams, upstream)
+        ? config.upstreams[upstream]
+        : undefined;
       if (target === undefined) {
         throw new Error(`unknown upstream: ${upstream}`);
       }
@@ -249,6 +268,9 @@ function createSession(
     },
   };
 }
+
+/** What `randomId()` produces: 256 random bits, base64url. */
+const SESSION_ID = /^[A-Za-z0-9_-]{43}$/;
 
 function needsSession(url: string): boolean {
   const path = pathOf(url);
@@ -282,18 +304,25 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
     }
   });
 
-  app.addHook("onRequest", async (request) => {
+  app.addHook("onRequest", async (request, reply) => {
     const id = request.cookies[config.session.cookieName];
     if (id === undefined || !needsSession(request.url)) {
       return;
     }
+    // Not an ID we issued: never let it reach a store key; drop the cookie.
+    if (!SESSION_ID.test(id)) {
+      clearSessionCookie(reply, config);
+      return;
+    }
     const data = await app.bffStore.get(id);
     if (data === undefined) {
+      clearSessionCookie(reply, config);
       return;
     }
     const now = nowSeconds();
     if (data.absoluteExpiresAt <= now) {
       await app.bffStore.destroy(id);
+      clearSessionCookie(reply, config);
       return;
     }
     await app.bffStore.touch(id, sessionTtlSeconds(config, data, now));

@@ -264,6 +264,8 @@ describe("login", () => {
   });
 });
 
+const SID = "L".repeat(43);
+
 describe("logout", () => {
   it("destroys the session and returns the RP-initiated logout URL", async () => {
     const b = new Browser(bff.app, idp.issuer);
@@ -295,7 +297,7 @@ describe("logout", () => {
   it("still logs out when the IdP cannot be reached", async () => {
     const down = await makeBff({ issuer: "http://localhost:1" });
     await down.store.put(
-      "sess-1",
+      SID,
       {
         sub: "alice",
         sid: null,
@@ -311,13 +313,13 @@ describe("logout", () => {
       },
       600,
     );
-    down.browser.bffJar.set("__Host-Http-session", "sess-1");
+    down.browser.bffJar.set("__Host-Http-session", SID);
     const res = await down.browser.request("POST", "/bff/logout", {
       csrf: true,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ logoutUrl: `${PUBLIC_ORIGIN}/` });
-    expect(await down.store.get("sess-1")).toBeUndefined();
+    expect(await down.store.get(SID)).toBeUndefined();
     await down.app.close();
   });
 });
@@ -468,7 +470,7 @@ describe("error handling", () => {
       },
     );
     expect(res.statusCode).toBe(415);
-    expect(res.json()).toEqual({ error: "FST_ERR_CTP_INVALID_MEDIA_TYPE" });
+    expect(res.json()).toEqual({ error: "request_failed" });
   });
 
   it("keeps testConfig usable for other suites", () => {

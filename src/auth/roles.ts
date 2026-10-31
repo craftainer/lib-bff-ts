@@ -1,14 +1,13 @@
 import { decodeJwt } from "jose";
 import { z } from "zod";
 
-const rolesSchema = z
-  .object({
-    realm_access: z.object({ roles: z.array(z.string()) }).optional(),
-    resource_access: z
-      .record(z.string(), z.object({ roles: z.array(z.string()) }))
-      .optional(),
-  })
-  .catch({});
+const rolesList = z.object({ roles: z.array(z.string()) });
+// Each part is validated alone: a malformed `resource_access` must not hide valid realm roles.
+const realmAccess = rolesList.optional().catch(undefined);
+const resourceAccess = z
+  .record(z.string(), rolesList)
+  .optional()
+  .catch(undefined);
 
 /** Client IDs that must never become role keys: `realm` is the realm-roles key, `__proto__` is unsafe. */
 const RESERVED_KEYS: ReadonlySet<string> = new Set(["realm", "__proto__"]);
@@ -17,13 +16,13 @@ function fromClaims(
   claims: Record<string, unknown>,
   onSkipped: (clientId: string) => void,
 ): Map<string, string[]> {
-  const parsed = rolesSchema.parse(claims);
+  const realm = realmAccess.parse(claims["realm_access"]);
   const roles = new Map<string, string[]>();
-  if (parsed.realm_access !== undefined) {
-    roles.set("realm", parsed.realm_access.roles);
+  if (realm !== undefined) {
+    roles.set("realm", realm.roles);
   }
   for (const [clientId, access] of Object.entries(
-    parsed.resource_access ?? {},
+    resourceAccess.parse(claims["resource_access"]) ?? {},
   )) {
     if (RESERVED_KEYS.has(clientId)) {
       onSkipped(clientId);

@@ -139,3 +139,47 @@ describe("back-channel logout", () => {
     ).toBeGreaterThanOrEqual(bad.length);
   });
 });
+
+describe("back-channel logout retry", () => {
+  it("lets the IdP retry the same token after a store failure", async () => {
+    let failures = 1;
+    const base = bff.store;
+    const flaky = new Proxy(base, {
+      get(target, prop: string) {
+        if (prop === "destroyBySid") {
+          return async (sid: string): Promise<number> => {
+            if (failures > 0) {
+              failures -= 1;
+              throw new Error("store unavailable");
+            }
+            return target.destroyBySid(sid);
+          };
+        }
+        const value = Reflect.get(target, prop) as unknown;
+        return typeof value === "function"
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const retrying = await makeBff(idp, { store: flaky });
+    const browser = new Browser(retrying.app, idp.issuer);
+    await browser.login(undefined, "carol");
+    const id = browser.bffJar.get("__Host-Http-session") as string;
+    const sid = (await base.get(id))?.sid;
+    const token = await idp.sign(claims({ sub: "carol", sid }));
+    const send = (): Promise<{ statusCode: number }> =>
+      new Browser(retrying.app, idp.issuer).request(
+        "POST",
+        "/bff/backchannel-logout",
+        {
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: `logout_token=${encodeURIComponent(token)}`,
+        },
+      );
+    expect((await send()).statusCode).toBe(500);
+    expect((await send()).statusCode).toBe(200);
+    expect(await base.get(id)).toBeUndefined();
+    expect((await send()).statusCode).toBe(400);
+    await retrying.app.close();
+  });
+});

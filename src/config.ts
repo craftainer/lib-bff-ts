@@ -84,6 +84,12 @@ export interface BffConfig {
     scopes: string;
     /** Allow plain-http IdP URLs (development only; refused in production). */
     allowInsecure: boolean;
+    /**
+     * Timeout of every IdP HTTP request (discovery, token, revocation). Must
+     * stay below `session.refreshLock.ttlMs`, so a refresh always ends while
+     * its lock is still held.
+     */
+    timeoutSeconds: number;
   };
   session: {
     /** `redis://`, `rediss://`, `valkey://` or `valkeys://` URL. */
@@ -127,6 +133,9 @@ const bool = (fallback: boolean): z.ZodType<boolean> =>
         .transform((v) => v === "true" || v === "1"),
     )
     .pipe(z.boolean());
+
+/** The per-session refresh lock TTL; the IdP request timeout must stay below it. */
+const REFRESH_LOCK_TTL_MS = 30_000;
 
 const PROXY_KEYWORDS = new Set(["loopback", "linklocal", "uniquelocal"]);
 
@@ -238,7 +247,9 @@ const envSchema = z.object({
   OIDC_CLIENT_SECRET: z.string().min(1),
   OIDC_SCOPES: z.string().default("openid profile email"),
   OIDC_ALLOW_INSECURE: bool(false),
+  OIDC_TIMEOUT_SECONDS: positiveInt(10, 120),
   SESSION_STORE_URL: z.url({ protocol: /^(redis|rediss|valkey|valkeys)$/ }),
+  SESSION_STORE_ALLOW_PLAINTEXT: bool(false),
   SESSION_IDLE_SECONDS: positiveInt(1800),
   SESSION_ABSOLUTE_SECONDS: positiveInt(28800),
   SESSION_COOKIE_NAME: z
@@ -271,28 +282,38 @@ function isHttpsOrAllowed(url: string, insecure: boolean): boolean {
   return new URL(url).protocol === "https:" || insecure;
 }
 
+/** Upstream names come from configuration; no prototype means `constructor` is not an upstream. */
+function nullProto(
+  upstreams: Record<string, UpstreamConfig>,
+): Record<string, UpstreamConfig> {
+  return Object.assign(
+    Object.create(null) as Record<string, UpstreamConfig>,
+    upstreams,
+  );
+}
+
 function parseUpstreams(
   raw: string | undefined,
   issues: string[],
 ): Record<string, UpstreamConfig> {
   if (raw === undefined) {
-    return {};
+    return nullProto({});
   }
   let json: unknown;
   try {
     json = JSON.parse(raw);
   } catch {
     issues.push("BFF_UPSTREAMS: not valid JSON");
-    return {};
+    return nullProto({});
   }
   const parsed = upstreamsSchema.safeParse(json);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
       issues.push(`BFF_UPSTREAMS.${issue.path.join(".")}: ${issue.message}`);
     }
-    return {};
+    return nullProto({});
   }
-  return parsed.data;
+  return nullProto(parsed.data);
 }
 
 function publicOrigin(
@@ -432,6 +453,20 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
       "SESSION_IDLE_SECONDS: must not exceed SESSION_ABSOLUTE_SECONDS",
     );
   }
+  if (e.OIDC_TIMEOUT_SECONDS * 1000 >= REFRESH_LOCK_TTL_MS) {
+    issues.push(
+      `OIDC_TIMEOUT_SECONDS: must be below the ${REFRESH_LOCK_TTL_MS / 1000} s refresh lock TTL`,
+    );
+  }
+  if (
+    production &&
+    /^(valkey|redis):/i.test(e.SESSION_STORE_URL) &&
+    !e.SESSION_STORE_ALLOW_PLAINTEXT
+  ) {
+    issues.push(
+      "SESSION_STORE_URL: plaintext redis:// or valkey:// is refused when NODE_ENV=production (use rediss:// or valkeys://, or set SESSION_STORE_ALLOW_PLAINTEXT=true for localhost or a private sidecar)",
+    );
+  }
   if (e.SESSION_COOKIE_NAME === LOGIN_COOKIE_NAME) {
     issues.push(`SESSION_COOKIE_NAME: must differ from ${LOGIN_COOKIE_NAME}`);
   }
@@ -465,6 +500,7 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
       clientSecret: e.OIDC_CLIENT_SECRET,
       scopes: e.OIDC_SCOPES.split(/\s+/).join(" "),
       allowInsecure: e.OIDC_ALLOW_INSECURE,
+      timeoutSeconds: e.OIDC_TIMEOUT_SECONDS,
     },
     session: {
       storeUrl: e.SESSION_STORE_URL,
@@ -473,7 +509,11 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
       cookieName: e.SESSION_COOKIE_NAME,
       loginTtlSeconds: 300,
       accessTokenSkewSeconds: 30,
-      refreshLock: { ttlMs: 30_000, waitMs: 30_000, pollMs: 25 },
+      refreshLock: {
+        ttlMs: REFRESH_LOCK_TTL_MS,
+        waitMs: REFRESH_LOCK_TTL_MS,
+        pollMs: 25,
+      },
     },
     rateLimit: {
       max: e.RATE_LIMIT_MAX,
