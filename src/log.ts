@@ -15,7 +15,8 @@ export type SecurityEvent =
   | "origin_rejected"
   | "backchannel_logout"
   | "backchannel_logout_rejected"
-  | "rate_limited";
+  | "rate_limited"
+  | "token_revocation_failed";
 
 const WARN_EVENTS: ReadonlySet<SecurityEvent> = new Set([
   "login_failed",
@@ -24,6 +25,7 @@ const WARN_EVENTS: ReadonlySet<SecurityEvent> = new Set([
   "origin_rejected",
   "backchannel_logout_rejected",
   "rate_limited",
+  "token_revocation_failed",
 ]);
 
 /** Allowed field values: never pass tokens, cookies or session IDs here. */
@@ -52,9 +54,41 @@ export const REDACT_PATHS: string[] = [
   "headers.cookie",
 ];
 
-/** The path of a request URL, without its query string. */
+function rawPathOf(url: string): string {
+  return url.split(/[?#]/, 1)[0] as string;
+}
+
+/**
+ * The canonical path of a request target: no query string or fragment, and
+ * percent-decoded the way Fastify's router decodes it (`decodeURI`), so
+ * `/%62ff/logout` is seen as `/bff/logout`. The one parser csrf, session and
+ * log share, so none can disagree with the router.
+ */
 export function pathOf(url: string): string {
-  return url.split("?", 1)[0] as string;
+  const raw = rawPathOf(url);
+  try {
+    return decodeURI(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * True for a request target that is not an ordinary origin-form path: it
+ * does not start with exactly one `/` (`//bff/x`, absolute-form, `*`) or its
+ * percent-encoding is malformed. Guards treat these as protected (fail closed).
+ */
+export function isAnomalousTarget(url: string): boolean {
+  const raw = rawPathOf(url);
+  if (!raw.startsWith("/") || raw.startsWith("//")) {
+    return true;
+  }
+  try {
+    decodeURI(raw);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /** A request serializer that drops the query string (it carries the authorization code and state). */

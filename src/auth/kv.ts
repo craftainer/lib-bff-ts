@@ -7,11 +7,14 @@ import { Valkey } from "iovalkey";
  */
 export interface KvClient {
   get(key: string): Promise<string | null>;
-  /** Returns false only when `nx` is set and the key already exists. */
+  /**
+   * Returns false when `nx` is set and the key already exists, or when
+   * `onlyIfExists` (SET ... XX) is set and the key does not exist.
+   */
   set(
     key: string,
     value: string,
-    opts: { ttlMs: number; nx?: boolean },
+    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
   ): Promise<boolean>;
   /** Atomically reads and deletes a key. */
   getDel(key: string): Promise<string | null>;
@@ -59,9 +62,13 @@ export class MemoryKv implements KvClient {
   set(
     key: string,
     value: string,
-    opts: { ttlMs: number; nx?: boolean },
+    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
   ): Promise<boolean> {
-    if (opts.nx === true && this.#live(key) !== undefined) {
+    const exists = this.#live(key) !== undefined;
+    if (
+      (opts.nx === true && exists) ||
+      (opts.onlyIfExists === true && !exists)
+    ) {
       return Promise.resolve(false);
     }
     this.#entries.set(key, {
@@ -156,12 +163,17 @@ export class ValkeyKv implements KvClient {
   async set(
     key: string,
     value: string,
-    opts: { ttlMs: number; nx?: boolean },
+    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
   ): Promise<boolean> {
-    const reply =
-      opts.nx === true
-        ? await this.#client.set(key, value, "PX", opts.ttlMs, "NX")
-        : await this.#client.set(key, value, "PX", opts.ttlMs);
+    const px = Math.max(1, Math.floor(opts.ttlMs));
+    let reply: "OK" | null;
+    if (opts.nx === true) {
+      reply = await this.#client.set(key, value, "PX", px, "NX");
+    } else if (opts.onlyIfExists === true) {
+      reply = await this.#client.set(key, value, "PX", px, "XX");
+    } else {
+      reply = await this.#client.set(key, value, "PX", px);
+    }
     return reply === "OK";
   }
 

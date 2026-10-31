@@ -67,6 +67,19 @@ describe("KvSessionStore", () => {
     expect(await store.touch("nope", 60)).toBe(false);
   });
 
+  it("replace overwrites an existing session but never recreates a destroyed one", async () => {
+    const { store, kv } = setup();
+    await store.put("s1", data(), 60);
+    expect(
+      await store.replace("s1", data({ accessToken: "new" }), 60_000),
+    ).toBe(true);
+    expect((await store.get("s1"))?.accessToken).toBe("new");
+    await store.destroy("s1");
+    expect(await store.replace("s1", data(), 60_000)).toBe(false);
+    expect(await store.get("s1")).toBeUndefined();
+    expect(await kv.get("sess:s1")).toBeNull();
+  });
+
   it("treats corrupt or malformed entries as missing", async () => {
     const { store, kv } = setup();
     await kv.set("sess:bad-json", "{not json", { ttlMs: 1000 });

@@ -24,6 +24,8 @@ export interface TestIdp {
     payload: Record<string, unknown>,
     opts?: { key?: CryptoKey; kid?: string; typ?: string | null },
   ): Promise<string>;
+  /** Milliseconds the token revocation endpoint stalls before answering (0 = none). */
+  revocationDelayMs: number;
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
   close(): Promise<void>;
@@ -38,7 +40,9 @@ async function freePort(): Promise<number> {
 }
 
 /** Starts the test IdP: code flow with PKCE, refresh rotation, no consent screen. */
-export async function startIdp(): Promise<TestIdp> {
+export async function startIdp(
+  opts: { revocation?: boolean } = {},
+): Promise<TestIdp> {
   const port = await freePort();
   const issuer = `http://localhost:${port}`;
   const { privateKey } = await generateKeyPair("RS256", { extractable: true });
@@ -67,7 +71,10 @@ export async function startIdp(): Promise<TestIdp> {
     jwks: { keys: [jwk as never] },
     cookies: { keys: ["test-cookie-key"] },
     pkce: { required: () => true },
-    features: { backchannelLogout: { enabled: true } },
+    features: {
+      backchannelLogout: { enabled: true },
+      revocation: { enabled: opts.revocation ?? true },
+    },
     conformIdTokenClaims: false,
     ttl: {
       AccessToken: 300,
@@ -94,7 +101,10 @@ export async function startIdp(): Promise<TestIdp> {
         preferred_username: sub,
         ...(sub === "noemail" ? {} : { email: `${sub}@example.com` }),
         realm_access: { roles: ["user"] },
-        resource_access: { [CLIENT_ID]: { roles: ["editor"] } },
+        resource_access: {
+          [CLIENT_ID]: { roles: ["editor"] },
+          ...(sub === "reserved" ? { realm: { roles: ["evil"] } } : {}),
+        },
       }),
     }),
     loadExistingGrant: async (ctx) => {
@@ -108,12 +118,26 @@ export async function startIdp(): Promise<TestIdp> {
     },
   });
 
+  const delays = { revocationMs: 0 };
+  provider.use(async (ctx, next) => {
+    if (ctx.path === "/token/revocation" && delays.revocationMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delays.revocationMs));
+    }
+    await next();
+  });
+
   const server: Server = provider.listen(port, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
 
   return {
     issuer,
     provider,
+    get revocationDelayMs() {
+      return delays.revocationMs;
+    },
+    set revocationDelayMs(value: number) {
+      delays.revocationMs = value;
+    },
     otherKey: other.privateKey,
     async sign(payload, opts = {}) {
       return new SignJWT(payload)

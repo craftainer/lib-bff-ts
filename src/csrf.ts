@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import fp from "fastify-plugin";
 import type { BffConfig } from "./config.ts";
-import { securityLog } from "./log.ts";
+import { isAnomalousTarget, pathOf, securityLog } from "./log.ts";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -16,10 +16,6 @@ const EXEMPT = new Set([
   "POST /bff/backchannel-logout",
 ]);
 
-function pathOf(url: string): string {
-  return new URL(url, "http://localhost").pathname;
-}
-
 /**
  * CSRF defence for the BFF (RFC 10017 6.1.3.3.2): every `/api/*` request and
  * every non-GET `/bff/*` request must carry `X-CSRF: 1`, which a cross-site
@@ -31,7 +27,9 @@ const csrf: FastifyPluginAsync<BffConfig> = async (app, config) => {
   app.addHook("onRequest", async (request, reply) => {
     const path = pathOf(request.url);
     const method = request.method;
-    if (EXEMPT.has(`${method} ${path}`)) {
+    // A target that is not a plain `/...` path is guarded like `/api` (fail closed).
+    const anomalous = isAnomalousTarget(request.url);
+    if (!anomalous && EXEMPT.has(`${method} ${path}`)) {
       return;
     }
     const safe = SAFE_METHODS.has(method);
@@ -58,7 +56,10 @@ const csrf: FastifyPluginAsync<BffConfig> = async (app, config) => {
         return reject("origin_rejected", "origin mismatch");
       }
     }
-    if ((isApi || (isBff && !safe)) && request.headers["x-csrf"] !== "1") {
+    if (
+      (anomalous || isApi || (isBff && !safe)) &&
+      request.headers["x-csrf"] !== "1"
+    ) {
       return reject("csrf_rejected", "missing X-CSRF header");
     }
   });

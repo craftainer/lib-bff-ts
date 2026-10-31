@@ -35,7 +35,13 @@ export async function createBff(
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: hardenLogger(opts.logger),
-    trustProxy: config.trustProxy,
+    // Fastify's types lack the hop-count form; a function is equivalent
+    // (`hop` counts from 0 at the socket peer).
+    trustProxy:
+      typeof config.trustProxy === "number"
+        ? (_address: string, hop: number): boolean =>
+            hop < (config.trustProxy as number)
+        : config.trustProxy,
   });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {

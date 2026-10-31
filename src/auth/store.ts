@@ -52,6 +52,12 @@ const transactionSchema: z.ZodType<LoginTransaction> = z.object({
 export interface SessionStore {
   /** Creates or replaces a session; it expires after `ttlSeconds` unless touched. */
   put(id: string, data: SessionData, ttlSeconds: number): Promise<void>;
+  /**
+   * Overwrites an existing session (token refresh) and returns true; returns
+   * false, writing nothing, when the session no longer exists (it was
+   * destroyed meanwhile). Atomic: `SET ... XX PX`.
+   */
+  replace(id: string, data: SessionData, ttlMs: number): Promise<boolean>;
   /** Returns undefined when the session is missing, expired or unreadable. */
   get(id: string): Promise<SessionData | undefined>;
   /** Slides the idle timeout. Returns false when the session no longer exists. */
@@ -124,6 +130,13 @@ export class KvSessionStore implements SessionStore {
       await this.#kv.sadd(key, id);
       await this.#kv.pexpire(key, this.#indexTtlMs);
     }
+  }
+
+  replace(id: string, data: SessionData, ttlMs: number): Promise<boolean> {
+    return this.#kv.set(`sess:${id}`, JSON.stringify(data), {
+      ttlMs,
+      onlyIfExists: true,
+    });
   }
 
   async get(id: string): Promise<SessionData | undefined> {
