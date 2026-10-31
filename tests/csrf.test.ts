@@ -42,9 +42,11 @@ describe("X-CSRF header", () => {
   it("is required on every /api request, including GET", async () => {
     expect((await send("GET", "/api/crud/heroes")).statusCode).toBe(403);
     expect((await send("GET", "/api")).statusCode).toBe(403);
-    expect(
-      (await send("GET", "/api/crud/heroes", { "x-csrf": "1" })).statusCode,
-    ).toBe(404);
+    // With X-CSRF the guard passes; the proxy then answers a no-session
+    // request itself.
+    const passed = await send("GET", "/api/crud/heroes", { "x-csrf": "1" });
+    expect(passed.statusCode).toBe(401);
+    expect(passed.json()).toEqual({ error: "unauthorized" });
   });
 
   it("is not required on GET /bff requests other than the API", async () => {
