@@ -19,6 +19,11 @@ export interface SessionData {
   createdAt: number;
   /** Epoch seconds; the session never outlives this, however often it is used. */
   absoluteExpiresAt: number;
+  /**
+   * Fencing token: 0 at login, bumped by every {@link SessionStore.replace}.
+   * A token refresh only lands when the version it started from is still current.
+   */
+  version: number;
 }
 
 /** The server-side login transaction (state is its key). */
@@ -40,6 +45,7 @@ const sessionDataSchema: z.ZodType<SessionData> = z.object({
   accessExpiresAt: z.number(),
   createdAt: z.number(),
   absoluteExpiresAt: z.number(),
+  version: z.number().int().nonnegative(),
 });
 
 const transactionSchema: z.ZodType<LoginTransaction> = z.object({
@@ -53,17 +59,29 @@ export interface SessionStore {
   /** Creates or replaces a session; it expires after `ttlSeconds` unless touched. */
   put(id: string, data: SessionData, ttlSeconds: number): Promise<void>;
   /**
-   * Overwrites an existing session (token refresh) and returns true; returns
-   * false, writing nothing, when the session no longer exists (it was
-   * destroyed meanwhile). Atomic: `SET ... XX PX`.
+   * Compare-and-set for a token refresh: writes `data` (stored with version
+   * `expectedVersion + 1`) only when the stored session still has version
+   * `expectedVersion`. Returns false, writing nothing, when the version moved
+   * (another refresh won) or the session is gone (logout). Atomic.
    */
-  replace(id: string, data: SessionData, ttlMs: number): Promise<boolean>;
+  replace(
+    id: string,
+    data: SessionData,
+    ttlMs: number,
+    expectedVersion: number,
+  ): Promise<boolean>;
   /** Returns undefined when the session is missing, expired or unreadable. */
   get(id: string): Promise<SessionData | undefined>;
   /** Slides the idle timeout. Returns false when the session no longer exists. */
   touch(id: string, ttlSeconds: number): Promise<boolean>;
   /** Returns whether a session was destroyed. */
   destroy(id: string): Promise<boolean>;
+  /**
+   * Destroys a session and returns what was stored at that instant (atomic
+   * GETDEL), or undefined when there was none. Logout revokes the refresh
+   * token of this record, not of a stale snapshot.
+   */
+  take(id: string): Promise<SessionData | undefined>;
   /** Back-channel logout: destroys every session of an IdP session id. Returns the count. */
   destroyBySid(sid: string): Promise<number>;
   /** Back-channel logout: destroys every session of a subject. Returns the count. */
@@ -129,43 +147,42 @@ export class KvSessionStore implements SessionStore {
   }
 
   async put(id: string, data: SessionData, ttlSeconds: number): Promise<void> {
-    // One atomic step: a session is never live without its index entries.
-    await this.#kv.multi([
-      {
-        op: "set",
-        key: `sess:${id}`,
-        value: JSON.stringify(data),
-        ttlMs: ttlSeconds * 1000,
-      },
-      ...this.#indexKeys(data).map((key): KvOp => ({
-        op: "sadd",
-        key,
-        member: id,
-        ttlMs: this.#indexTtlMs,
-      })),
-    ]);
+    // One MULTI: the session and its index entries are written together.
+    try {
+      await this.#kv.multi([
+        {
+          op: "set",
+          key: `sess:${id}`,
+          value: JSON.stringify(data),
+          ttlMs: ttlSeconds * 1000,
+        },
+        ...this.#indexKeys(data).map((key): KvOp => ({
+          op: "sadd",
+          key,
+          member: id,
+          ttlMs: this.#indexTtlMs,
+        })),
+      ]);
+    } catch (error) {
+      // MULTI does not roll back run-time failures: never leave a session
+      // that back-channel logout cannot find.
+      await this.#kv.del(`sess:${id}`).catch(() => 0);
+      throw error;
+    }
   }
 
-  /**
-   * `SET ... XX` as the only op of a MULTI: Valkey checks existence and
-   * writes in one step, so a concurrent destroy can never be undone. The
-   * index entries are unchanged by a refresh (same `sub` and `sid`).
-   */
   async replace(
     id: string,
     data: SessionData,
     ttlMs: number,
+    expectedVersion: number,
   ): Promise<boolean> {
-    const [written] = await this.#kv.multi([
-      {
-        op: "set",
-        key: `sess:${id}`,
-        value: JSON.stringify(data),
-        ttlMs,
-        onlyIfExists: true,
-      },
-    ]);
-    return written === true;
+    return this.#kv.compareAndSetVersion(
+      `sess:${id}`,
+      expectedVersion,
+      JSON.stringify({ ...data, version: expectedVersion + 1 }),
+      ttlMs,
+    );
   }
 
   async get(id: string): Promise<SessionData | undefined> {
@@ -177,18 +194,22 @@ export class KvSessionStore implements SessionStore {
   }
 
   async destroy(id: string): Promise<boolean> {
-    const data = await this.get(id);
-    const [deleted] = await this.#kv.multi([
-      { op: "del", key: `sess:${id}` },
-      ...(data === undefined
-        ? []
-        : this.#indexKeys(data).map((key): KvOp => ({
-            op: "srem",
-            key,
-            member: id,
-          }))),
-    ]);
-    return (deleted as number) > 0;
+    return (await this.take(id)) !== undefined;
+  }
+
+  async take(id: string): Promise<SessionData | undefined> {
+    // GETDEL is atomic: what it returns is exactly what was removed.
+    const data = parse(sessionDataSchema, await this.#kv.getDel(`sess:${id}`));
+    if (data !== undefined) {
+      await this.#kv.multi(
+        this.#indexKeys(data).map((key): KvOp => ({
+          op: "srem",
+          key,
+          member: id,
+        })),
+      );
+    }
+    return data;
   }
 
   destroyBySid(sid: string): Promise<number> {

@@ -19,6 +19,7 @@ const base: SessionData = {
   refreshToken: "old-rt",
   accessExpiresAt: 0,
   createdAt: 0,
+  version: 0,
   absoluteExpiresAt: 100_000,
 };
 

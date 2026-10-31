@@ -88,52 +88,76 @@ unstarted instance. These choices are settled:
   navigations, protected by the login transaction) and
   `POST /bff/backchannel-logout` (authenticated by its signed token).
 - **Atomic store writes.** `KvClient.multi` applies a list of operations in
-  one Valkey `MULTI`/`EXEC` (in memory, one synchronous tick). `put` writes
-  the session and adds it to its `sub:` and `sid:` index sets in one
-  transaction, `destroy` deletes it and removes it from both, so a session
-  is never live without its index entries and back-channel logout finds every
-  session. The index sets expire by their own TTL (the absolute session
-  lifetime, renewed on each add); a logout never deletes a whole set, so a
-  session that logged in meanwhile keeps its entry. `replace` is a `MULTI`
-  holding one `SET ... XX PX`: Valkey checks existence and writes in a single
-  step, which is simpler than `WATCH` and has no retry loop.
+  one Valkey `MULTI`/`EXEC` (in memory, one synchronous tick): no other
+  command runs in between. It is not a rollback, since Valkey does not undo
+  commands that fail at run time, so `put` (the session and its `sub:` and
+  `sid:` index entries in one `multi`) deletes the session key again when the
+  `multi` rejects, and a session never stays live without its index entries.
+  Index sets expire by their own TTL (the absolute session lifetime, renewed
+  on each add); a logout never deletes a whole set, so a session that logged
+  in meanwhile keeps its entry. `take` (used by `destroy`) is an atomic
+  `GETDEL` that returns exactly what was removed; the index cleanup follows in
+  a `multi`, and a failure there leaves a stale member that is harmless and is
+  dropped by the next back-channel logout.
+- **Fencing.** Every session record carries a `version` (0 at login).
+  `SessionStore.replace(id, data, ttlMs, expectedVersion)` is a
+  compare-and-set (a Lua script in Valkey, one synchronous step in memory):
+  it writes, with the version bumped, only when the stored version still
+  equals `expectedVersion`. A lost compare-and-set (another refresh won, or a
+  logout removed the session) makes the refresh treat the tokens it was just
+  issued as orphans: it revokes the new refresh token best effort (only when
+  the IdP rotated it) and re-reads the session; a newer session is used, a
+  missing one answers 401. So a refresh can neither undo a logout nor
+  overwrite a newer refresh, whatever the timing.
 - **Plaintext store URLs.** The store holds access, refresh and ID tokens.
-  With `NODE_ENV=production`, `loadConfig` rejects `redis://` and
-  `valkey://` unless `SESSION_STORE_ALLOW_PLAINTEXT=true` (localhost or a
-  sidecar on a private network); `rediss://` and `valkeys://` are always
-  accepted.
-- **Refresh.** The BFF refreshes access tokens itself, under the
-  per-session lock (30 s) so
-  concurrent requests refresh once, which suits refresh-token rotation. Only
-  an OAuth `invalid_grant` answer destroys the session and answers 401 (the
-  SPA navigates to `/bff/login`). Every other failure (another OAuth error
-  such as `invalid_client`, a 5xx, `server_error`, `temporarily_unavailable`,
-  a network or discovery failure) keeps the session and answers 503
-  `idp_unavailable`, so an IdP blip does not log users out. Invariant:
-  every IdP request (`OIDC_TIMEOUT_SECONDS`, default 10 s, applied to the
-  openid-client configuration) ends before the 30 s lock TTL, so a refresh
-  never outlives its lock and no renewal is needed; `loadConfig` rejects a
-  timeout that is not below the lock TTL. The refreshed
-  session is written with `SET ... XX PX` (`SessionStore.replace`): when a
-  logout or back-channel logout removed the session meanwhile, nothing is
-  written and the answer is 401, so a logout is never undone. The rotated
-  refresh token the IdP just issued was never stored, so it is revoked
-  (RFC 7009) at once.
-- **Logout.** `POST /bff/logout` destroys the session, revokes the refresh
-  token at the IdP (RFC 7009) when discovery advertises
+  `loadConfig` rejects `redis://` and `valkey://` to any host other than
+  `localhost`, 127.0.0.0/8 and `::1`, whatever `NODE_ENV` says (it may be
+  unset), unless `SESSION_STORE_ALLOW_PLAINTEXT=true` (a sidecar on a private
+  network). `rediss://` and `valkeys://` are always accepted.
+- **Session cookie name.** `SESSION_COOKIE_NAME` must start with `__Host-`
+  (the default is `__Host-Http-session`), so the prefix guarantee of
+  ASVS 3.3.3 is enforced, not only the default.
+- **Refresh.** The BFF refreshes access tokens itself, under a per-session
+  lock (30 s) so concurrent requests mostly refresh once, which suits
+  refresh-token rotation. Correctness does not depend on the lock: if it
+  lapses and two requests refresh, fencing (above) keeps one result and
+  revokes the other's orphaned token; a request whose refresh token was
+  already rotated by the winner (`invalid_grant`) uses the winner's session
+  instead of ending it. Only an OAuth `invalid_grant` that no newer session
+  explains destroys the session and answers 401 (the SPA navigates to
+  `/bff/login`). Every other failure (another OAuth error such as
+  `invalid_client`, a 5xx, `server_error`, `temporarily_unavailable`, a
+  network or discovery failure, a timeout) keeps the session and answers 503
+  `idp_unavailable`, so an IdP blip does not log users out. The refresh
+  re-checks `absoluteExpiresAt` first (an expired session answers 401) and
+  honours a `refresh_expires_in` in the response, which can only shorten the
+  absolute limit. Every IdP request has a timeout (`OIDC_TIMEOUT_SECONDS`,
+  default 10 s); `loadConfig` caps it below the lock TTL as a sanity limit
+  that keeps the lock useful, not as a correctness invariant. A failing lock
+  release is logged and never masks the outcome.
+- **Logout.** `POST /bff/logout` takes the session out of the store
+  atomically (`take`), revokes the refresh token of that stored record, not
+  of the request's snapshot, at the IdP (RFC 7009) when discovery advertises
   `revocation_endpoint`, and returns `{logoutUrl}` (`end_session_endpoint`
   with `id_token_hint` and `post_logout_redirect_uri`). Revocation is best
   effort: awaited for at most 2 s, a failure is logged as the
   `token_revocation_failed` security event, and the logout is never blocked.
-  Back-channel logout does not revoke (the IdP started it and already ended
-  its session). `POST /bff/backchannel-logout` implements OIDC Back-Channel
-  Logout 1.0: it verifies the logout token with `jose` (`typ`, signature,
-  `iss`, `aud`, `iat`/`exp`/`jti`, the event, `sid` or `sub`, no `nonce`),
-  rejects a replayed `jti` (the claim is released again when ending the
-  sessions fails, so the IdP's retry gets through), and ends the sessions of the `sid` (or of the
-  `sub` when there is no `sid`). It has a 16 KB body limit and deliberately
-  no rate limit: the IdP is the caller, throttling would drop real logouts,
-  and the signed token authenticates the request.
+  Revocation is deliberately limited to explicit logout and to the orphaned
+  tokens above: back-channel logout (the IdP ended its session), re-login,
+  and expiry or refresh failure (the IdP rejected or aged the token) do not
+  revoke. `POST /bff/backchannel-logout` implements OIDC Back-Channel Logout
+  1.0: it verifies the logout token with `jose` (`typ`, signature, `iss`,
+  `aud`, `iat`/`exp`/`jti`, the event, `sid` or `sub`, no `nonce`), rejects a
+  replayed `jti`, and ends the sessions of the `sid` (or of the `sub` when
+  there is no `sid`). The `jti` is claimed first and released again when
+  ending the sessions throws, so the IdP's retry gets through; a process
+  crash between the claim and the end of the sessions keeps the token
+  consumed for 10 minutes. That window is accepted: claiming after the
+  destroy would let a replayed token log out a session created later. When
+  the IdP's discovery or key set is unreachable the answer is 503 (the IdP
+  retries), not 400. The route has a 16 KB body limit and deliberately no
+  rate limit: the IdP is the caller, throttling would drop real logouts, and
+  the signed token authenticates the request.
 - **Upstreams.** `BFF_UPSTREAMS` is an explicit allowlist validated with
   `zod` (RFC 10017 6.1.3.6). The session API for the proxy is
   `request.bffSession?.accessTokenFor(upstream)`. Per-upstream token

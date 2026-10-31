@@ -71,9 +71,14 @@ describe("refresh", () => {
     const racing = new Proxy(inner, {
       get(target, prop) {
         if (prop === "replace") {
-          return async (id: string, data: SessionData, ttlMs: number) => {
+          return async (
+            id: string,
+            data: SessionData,
+            ttlMs: number,
+            version: number,
+          ) => {
             await target.destroy(id); // logout lands before the refreshed tokens are written
-            return target.replace(id, data, ttlMs);
+            return target.replace(id, data, ttlMs, version);
           };
         }
         const value = Reflect.get(target, prop) as unknown;
@@ -290,10 +295,15 @@ describe("refresh that loses the race against a logout", () => {
     const inner = createMemorySessionStore();
     let rotated: string | undefined;
     const racing = storeWith(inner, {
-      replace: (async (id: string, data: SessionData, ttlMs: number) => {
+      replace: (async (
+        id: string,
+        data: SessionData,
+        ttlMs: number,
+        version: number,
+      ) => {
         rotated = data.refreshToken ?? undefined;
         await inner.destroy(id);
-        return inner.replace(id, data, ttlMs);
+        return inner.replace(id, data, ttlMs, version);
       }) as never,
     });
     const { bff, id, data } = await loggedIn(racing);
@@ -459,5 +469,287 @@ describe("roles claims are validated one part at a time", () => {
         "opaque",
       ),
     ).toEqual({ foo: ["r"] });
+  });
+});
+
+/** Trades a refresh token at the IdP directly: what a concurrent refresh would have done. */
+async function rotateAtIdp(refreshToken: string): Promise<{
+  access_token: string;
+  refresh_token: string;
+}> {
+  const res = await fetch(`${idp.issuer}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+    }),
+  });
+  return (await res.json()) as { access_token: string; refresh_token: string };
+}
+
+const FAR = (): number => Math.floor(Date.now() / 1000) + 3000;
+
+describe("fenced refresh", () => {
+  it("a refresh that lost the version race revokes its orphaned refresh token and uses the winner's session", async () => {
+    const inner = createMemorySessionStore();
+    let orphan: string | undefined;
+    const racing = storeWith(inner, {
+      replace: (async (
+        id: string,
+        data: SessionData,
+        ttlMs: number,
+        version: number,
+      ) => {
+        orphan = data.refreshToken ?? undefined;
+        // Another request refreshed first and stored its result.
+        await inner.replace(
+          id,
+          { ...data, accessToken: "winner", accessExpiresAt: FAR() },
+          ttlMs,
+          version,
+        );
+        return inner.replace(id, data, ttlMs, version);
+      }) as never,
+    });
+    const { bff, id, data } = await loggedIn(racing);
+    await inner.put(id, { ...data, accessExpiresAt: 0 }, 600);
+    const res = await bff.browser.request("GET", "/bff/test-token");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ token: "winner" });
+    expect(orphan).toBeDefined();
+    expect(await refreshGrantStatus(orphan as string)).toBe(400);
+    expect((await inner.get(id))?.version).toBe(1);
+    await bff.app.close();
+  });
+
+  it("leaves a refresh token alone when the IdP did not rotate it", async () => {
+    const plain = await startIdp({ rotate: false });
+    try {
+      const inner = createMemorySessionStore();
+      const racing = storeWith(inner, {
+        replace: (async (
+          id: string,
+          data: SessionData,
+          ttlMs: number,
+          version: number,
+        ) => {
+          await inner.replace(
+            id,
+            { ...data, accessToken: "winner", accessExpiresAt: FAR() },
+            ttlMs,
+            version,
+          );
+          return inner.replace(id, data, ttlMs, version);
+        }) as never,
+      });
+      const bff = await makeBff(plain, { store: racing });
+      register(bff);
+      await bff.browser.login();
+      const id = bff.browser.bffJar.get(COOKIE) as string;
+      const data = (await inner.get(id)) as SessionData;
+      await inner.put(id, { ...data, accessExpiresAt: 0 }, 600);
+      const res = await bff.browser.request("GET", "/bff/test-token");
+      expect(res.json()).toEqual({ token: "winner" });
+      expect(
+        bff.logs.some((l) => l["event"] === "token_revocation_failed"),
+      ).toBe(false);
+      const stillValid = await fetch(`${plain.issuer}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: data.refreshToken as string,
+          client_id: CLIENT_ID,
+          client_secret: CLIENT_SECRET,
+        }),
+      });
+      expect(stillValid.status).toBe(200);
+      await bff.app.close();
+    } finally {
+      await plain.close();
+    }
+  });
+
+  it("does not throw when revoking the orphan fails because the IdP configuration is unavailable", async () => {
+    const inner = createMemorySessionStore();
+    const racing = storeWith(inner, {
+      replace: (async () => false) as never,
+    });
+    const { bff, id, data } = await loggedIn(racing);
+    await inner.put(id, { ...data, accessExpiresAt: 0 }, 600);
+    const oidc = bff.app.bffOidc;
+    const real = oidc.configuration.bind(oidc);
+    let calls = 0;
+    oidc.configuration = async () => {
+      calls += 1;
+      if (calls > 1) {
+        throw new Error("discovery failed");
+      }
+      return real();
+    };
+    const res = await bff.browser.request("GET", "/bff/test-token");
+    // replace said "lost", the session still exists, so the caller gets it back.
+    expect(res.statusCode).toBe(200);
+    expect(bff.logs.some((l) => l["event"] === "token_revocation_failed")).toBe(
+      true,
+    );
+    await bff.app.close();
+  });
+
+  it("uses the winner's session when a concurrent refresh already rotated the token (invalid_grant)", async () => {
+    const inner = createMemorySessionStore();
+    let gets = 0;
+    let winner: SessionData | undefined;
+    const store = storeWith(inner, {
+      get: (async (id: string) => {
+        gets += 1;
+        return gets <= 2 && stale !== undefined ? stale : inner.get(id);
+      }) as never,
+    });
+    let stale: SessionData | undefined;
+    const { bff, id, data } = await loggedIn(store);
+    gets = 0;
+    stale = { ...data, accessExpiresAt: 0 };
+    const rotated = await rotateAtIdp(data.refreshToken as string);
+    winner = {
+      ...data,
+      accessToken: rotated.access_token,
+      refreshToken: rotated.refresh_token,
+      accessExpiresAt: FAR(),
+      version: 1,
+    };
+    await inner.put(id, winner, 600);
+    const res = await bff.browser.request("GET", "/bff/test-token");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ token: rotated.access_token });
+    expect(await inner.get(id)).toBeDefined();
+    await bff.app.close();
+  });
+
+  it("ends the session on invalid_grant when nobody else refreshed or the session is gone", async () => {
+    const inner = createMemorySessionStore();
+    let gets = 0;
+    let stale: SessionData | undefined;
+    const store = storeWith(inner, {
+      get: (async (id: string) => {
+        gets += 1;
+        return gets <= 2 && stale !== undefined ? stale : inner.get(id);
+      }) as never,
+    });
+    const { bff, id, data } = await loggedIn(store);
+    gets = 0;
+    stale = {
+      ...data,
+      accessExpiresAt: 0,
+      refreshToken: "garbage",
+    };
+    await inner.destroy(id);
+    const res = await bff.browser.request("GET", "/bff/test-token");
+    expect(res.statusCode).toBe(401);
+    await bff.app.close();
+  });
+
+  it("refuses to refresh a session that reached its absolute limit while the request ran", async () => {
+    const inner = createMemorySessionStore();
+    let gets = 0;
+    const store = storeWith(inner, {
+      get: (async (id: string) => {
+        gets += 1;
+        const real = await inner.get(id);
+        return gets === 2 && real !== undefined
+          ? { ...real, absoluteExpiresAt: 1 }
+          : real;
+      }) as never,
+    });
+    const { bff, id, data } = await loggedIn(store);
+    await inner.put(id, { ...data, accessExpiresAt: 0 }, 600);
+    gets = 0;
+    const res = await bff.browser.request("GET", "/bff/test-token");
+    expect(res.statusCode).toBe(401);
+    expect(await inner.get(id)).toBeUndefined();
+    await bff.app.close();
+  });
+
+  it("honours a new refresh_expires_in by shortening the absolute limit", async () => {
+    const store = createMemorySessionStore();
+    const { bff, id, data } = await loggedIn(store);
+    await store.put(id, { ...data, accessExpiresAt: 0 }, 600);
+    idp.refreshExpiresIn = 120;
+    try {
+      const res = await bff.browser.request("GET", "/bff/test-token");
+      expect(res.statusCode).toBe(200);
+    } finally {
+      idp.refreshExpiresIn = undefined;
+    }
+    const after = (await store.get(id)) as SessionData;
+    const now = Math.floor(Date.now() / 1000);
+    expect(after.absoluteExpiresAt).toBeLessThanOrEqual(now + 120);
+    expect(after.absoluteExpiresAt).toBeLessThan(data.absoluteExpiresAt);
+    expect(after.version).toBe(1);
+    await bff.app.close();
+  });
+
+  it("a failing lock release never masks the outcome", async () => {
+    const inner = createMemorySessionStore();
+    const store = storeWith(inner, {
+      releaseLock: (async () => {
+        throw new Error("store connection dropped");
+      }) as never,
+    });
+    const { bff, id, data } = await loggedIn(store);
+    await inner.put(id, { ...data, accessExpiresAt: 0 }, 600);
+    const res = await bff.browser.request("GET", "/bff/test-token");
+    expect(res.statusCode).toBe(200);
+    expect(
+      bff.logs.some((l) => l["msg"] === "refresh lock release failed"),
+    ).toBe(true);
+    await bff.app.close();
+  });
+});
+
+describe("logout racing a refresh", () => {
+  it("revokes the refresh token that is stored at logout, not the request's stale snapshot", async () => {
+    const inner = createMemorySessionStore();
+    let rotatedTo: string | undefined;
+    const store = storeWith(inner, {
+      touch: (async (id: string, ttl: number) => {
+        // A concurrent refresh lands right after this request read the session.
+        const snapshot = (await inner.get(id)) as SessionData;
+        const next = await rotateAtIdp(snapshot.refreshToken as string);
+        rotatedTo = next.refresh_token;
+        await inner.replace(
+          id,
+          { ...snapshot, refreshToken: next.refresh_token },
+          60_000,
+          snapshot.version,
+        );
+        return inner.touch(id, ttl);
+      }) as never,
+    });
+    const bff = await makeBff(idp, { store });
+    await bff.browser.login();
+    const res = await bff.browser.request("POST", "/bff/logout", {
+      csrf: true,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(rotatedTo).toBeDefined();
+    expect(await refreshGrantStatus(rotatedTo as string)).toBe(400);
+    await bff.app.close();
+  });
+});
+
+describe("back-channel logout while the IdP is unreachable", () => {
+  it("answers 503 so the IdP retries, not a permanent 400", async () => {
+    const down = await makeBff({ issuer: "http://localhost:1" });
+    const res = await down.browser.request("POST", "/bff/backchannel-logout", {
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "logout_token=abc",
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toEqual({ error: "idp_unavailable" });
+    await down.app.close();
   });
 });

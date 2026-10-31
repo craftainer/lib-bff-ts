@@ -28,6 +28,8 @@ export interface TestIdp {
   revocationDelayMs: number;
   /** Milliseconds the token endpoint stalls before answering (0 = none). */
   tokenDelayMs: number;
+  /** When set, the token endpoint adds this `refresh_expires_in` to its responses. */
+  refreshExpiresIn: number | undefined;
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
   close(): Promise<void>;
@@ -43,7 +45,7 @@ async function freePort(): Promise<number> {
 
 /** Starts the test IdP: code flow with PKCE, refresh rotation, no consent screen. */
 export async function startIdp(
-  opts: { revocation?: boolean } = {},
+  opts: { revocation?: boolean; rotate?: boolean } = {},
 ): Promise<TestIdp> {
   const port = await freePort();
   const issuer = `http://localhost:${port}`;
@@ -94,7 +96,7 @@ export async function startIdp(
       roles: ["realm_access", "resource_access"],
     },
     issueRefreshToken: async () => true,
-    rotateRefreshToken: () => true,
+    rotateRefreshToken: () => opts.rotate ?? true,
     findAccount: async (_ctx, sub) => ({
       accountId: sub,
       claims: async () => ({
@@ -120,7 +122,11 @@ export async function startIdp(
     },
   });
 
-  const delays = { revocationMs: 0, tokenMs: 0 };
+  const delays = {
+    revocationMs: 0,
+    tokenMs: 0,
+    refreshExpiresIn: undefined as number | undefined,
+  };
   provider.use(async (ctx, next) => {
     if (ctx.path === "/token/revocation" && delays.revocationMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delays.revocationMs));
@@ -129,6 +135,14 @@ export async function startIdp(
       await new Promise((resolve) => setTimeout(resolve, delays.tokenMs));
     }
     await next();
+    if (
+      ctx.path === "/token" &&
+      delays.refreshExpiresIn !== undefined &&
+      typeof ctx.body === "object"
+    ) {
+      (ctx.body as Record<string, unknown>)["refresh_expires_in"] =
+        delays.refreshExpiresIn;
+    }
   });
 
   const server: Server = provider.listen(port, "127.0.0.1");
@@ -142,6 +156,12 @@ export async function startIdp(
     },
     set revocationDelayMs(value: number) {
       delays.revocationMs = value;
+    },
+    get refreshExpiresIn() {
+      return delays.refreshExpiresIn;
+    },
+    set refreshExpiresIn(value: number | undefined) {
+      delays.refreshExpiresIn = value;
     },
     get tokenDelayMs() {
       return delays.tokenMs;

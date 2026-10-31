@@ -163,8 +163,39 @@ function createSession(
     throw new BffHttpError(401, "session_expired");
   }
 
+  /**
+   * Revokes a refresh token that was issued but can no longer be stored. It
+   * must never throw: the caller is already on a failure path.
+   */
+  async function revokeOrphan(d: SessionData, token: string): Promise<void> {
+    let failure: Error | undefined;
+    try {
+      failure = await revokeRefreshToken(
+        await app.bffOidc.configuration(),
+        token,
+      );
+    } catch (error) {
+      failure = error as Error;
+    }
+    if (failure !== undefined) {
+      securityLog(log, "token_revocation_failed", {
+        sub: d.sub,
+        reason: failure.name,
+      });
+    }
+  }
+
+  /** The session as another request left it, or a 401 when it is gone. */
+  async function reread(): Promise<SessionData> {
+    const latest = await store.get(id);
+    if (latest === undefined) {
+      throw new BffHttpError(401, "session_expired");
+    }
+    return latest;
+  }
+
   async function refresh(d: SessionData): Promise<SessionData> {
-    if (d.refreshToken === null) {
+    if (d.refreshToken === null || nowSeconds() >= d.absoluteExpiresAt) {
       return fail(d);
     }
     let tokens: client.TokenEndpointResponse;
@@ -179,36 +210,44 @@ function createSession(
         error instanceof client.ResponseBodyError &&
         error.error === "invalid_grant"
       ) {
-        return fail(d);
+        // Rotation: a request that outran the lock holder may have used the
+        // token already. If the session moved on, that is its result.
+        const latest = await store.get(id);
+        return latest !== undefined && latest.version !== d.version
+          ? latest
+          : fail(d);
       }
       log.error({ err: error }, "token refresh unavailable");
       throw new BffHttpError(503, "idp_unavailable");
     }
     const now = nowSeconds();
     const next = applyTokens(d, tokens, now);
-    // Conditional write: a logout that landed during the refresh must stay logged out.
+    // A new refresh lifetime can only shorten the absolute limit.
+    next.absoluteExpiresAt = Math.min(
+      d.absoluteExpiresAt,
+      absoluteExpiry(config, now, tokens["refresh_expires_in"]),
+    );
+    // Fenced write: lands only if nobody refreshed or logged out meanwhile.
     if (
-      !(await store.replace(
+      await store.replace(
         id,
         next,
         sessionTtlSeconds(config, next, now) * 1000,
-      ))
+        d.version,
+      )
     ) {
-      // Logged out meanwhile: the rotated refresh token was never stored, so
-      // revoke it here or it would outlive the logout at the IdP.
-      const failure = await revokeRefreshToken(
-        await app.bffOidc.configuration(),
-        next.refreshToken as string,
-      );
-      if (failure !== undefined) {
-        securityLog(log, "token_revocation_failed", {
-          sub: d.sub,
-          reason: failure.name,
-        });
-      }
-      throw new BffHttpError(401, "session_expired");
+      return { ...next, version: d.version + 1 };
     }
-    return next;
+    // Lost the race. The tokens just issued are orphans: when the IdP rotated
+    // the refresh token, nobody holds the new one, so revoke it (a token that
+    // was not rotated is the winner's and stays).
+    if (
+      tokens.refresh_token !== undefined &&
+      tokens.refresh_token !== d.refreshToken
+    ) {
+      await revokeOrphan(d, tokens.refresh_token);
+    }
+    return reread();
   }
 
   async function current(): Promise<SessionData> {
@@ -221,21 +260,18 @@ function createSession(
       const token = await store.acquireLock(id, ttlMs);
       if (token !== undefined) {
         try {
-          const latest = await store.get(id);
-          if (latest === undefined) {
-            throw new BffHttpError(401, "session_expired");
-          }
+          const latest = await reread();
           return fresh(latest) ? latest : await refresh(latest);
         } finally {
-          await store.releaseLock(id, token);
+          // A failed release must not mask the real outcome; the lock expires.
+          await store.releaseLock(id, token).catch((error: unknown) => {
+            log.error({ err: error }, "refresh lock release failed");
+          });
         }
       }
       // Another request is refreshing this session: wait for its result.
       await sleep(pollMs);
-      const latest = await store.get(id);
-      if (latest === undefined) {
-        throw new BffHttpError(401, "session_expired");
-      }
+      const latest = await reread();
       if (fresh(latest)) {
         return latest;
       }

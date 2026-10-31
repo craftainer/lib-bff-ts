@@ -47,13 +47,11 @@ describe("ValkeyKv", () => {
     expect(await kv.get("k")).toBe("v");
     expect(await kv.set("k", "v", { ttlMs: 5 })).toBe(true);
     expect(await kv.set("k", "v", { ttlMs: 5, nx: true })).toBe(true);
-    expect(await kv.set("k", "v", { ttlMs: 7.9, onlyIfExists: true })).toBe(
-      true,
-    );
     expect(await kv.getDel("k")).toBe("g");
     expect(await kv.del("a", "b")).toBe(2);
     expect(await kv.pexpire("k", 9)).toBe(true);
     expect(await kv.smembers("s")).toEqual(["a"]);
+    expect(await kv.compareAndSetVersion("k", 3, "{}", 7.9)).toBe(true);
     expect(await kv.delIfEquals("k", "v")).toBe(true);
     await kv.ping();
     await kv.quit();
@@ -61,11 +59,11 @@ describe("ValkeyKv", () => {
       ["get", "k"],
       ["set", "k", "v", "PX", 5],
       ["set", "k", "v", "PX", 5, "NX"],
-      ["set", "k", "v", "PX", 7, "XX"],
       ["getdel", "k"],
       ["del", "a", "b"],
       ["pexpire", "k", 9],
       ["smembers", "s"],
+      ["eval", expect.stringContaining("cjson.decode"), 1, "k", 3, "{}", 7],
       [
         "eval",
         expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
@@ -82,9 +80,7 @@ describe("ValkeyKv", () => {
     const { client } = fake({ set: null, pexpire: 0, eval: 0 });
     const kv = new ValkeyKv(client);
     expect(await kv.set("k", "v", { ttlMs: 5, nx: true })).toBe(false);
-    expect(await kv.set("k", "v", { ttlMs: 5, onlyIfExists: true })).toBe(
-      false,
-    );
+    expect(await kv.compareAndSetVersion("k", 1, "{}", 5)).toBe(false);
     expect(await kv.pexpire("k", 1)).toBe(false);
     expect(await kv.delIfEquals("k", "v")).toBe(false);
   });
@@ -140,7 +136,7 @@ describe("ValkeyKv.multi", () => {
     ]);
     const results = await kv.multi([
       { op: "set", key: "a", value: "1", ttlMs: 10.7 },
-      { op: "set", key: "b", value: "2", ttlMs: 10, onlyIfExists: true },
+      { op: "set", key: "b", value: "2", ttlMs: 10 },
       { op: "del", key: "c" },
       { op: "sadd", key: "s", member: "m", ttlMs: 99 },
       { op: "srem", key: "s", member: "m" },
@@ -148,7 +144,7 @@ describe("ValkeyKv.multi", () => {
     expect(results).toEqual([true, false, 1, 1, 0]);
     expect(queued).toEqual([
       ["set", "a", "1", "PX", 10],
-      ["set", "b", "2", "PX", 10, "XX"],
+      ["set", "b", "2", "PX", 10],
       ["del", "c"],
       ["sadd", "s", "m"],
       ["pexpire", "s", 99],

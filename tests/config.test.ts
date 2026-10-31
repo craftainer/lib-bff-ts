@@ -5,7 +5,7 @@ const base = {
   PUBLIC_ORIGIN: "https://app.example.com",
   OIDC_ISSUER: "https://idp.example.com/realms/x",
   OIDC_CLIENT_SECRET: "s3cret",
-  SESSION_STORE_URL: "redis://valkey:6379",
+  SESSION_STORE_URL: "rediss://valkey:6379",
 };
 
 function issues(env: Record<string, string | undefined>): string[] {
@@ -366,18 +366,26 @@ describe("loadConfig", () => {
   });
 });
 
-describe("SESSION_STORE_URL in production", () => {
-  const prod = { ...base, NODE_ENV: "production" };
+describe("SESSION_STORE_URL transport", () => {
+  const remote = ["redis://valkey:6379", "valkey://valkey:6379"];
 
-  it("refuses plaintext redis:// and valkey:// unless explicitly allowed", () => {
-    for (const url of ["redis://valkey:6379", "valkey://valkey:6379"]) {
-      expect(
-        issues({ ...prod, SESSION_STORE_URL: url }).join("\n"),
-        url,
-      ).toContain("SESSION_STORE_URL: plaintext");
+  it("refuses plaintext redis:// and valkey:// to a non-loopback host, whatever NODE_ENV says", () => {
+    for (const env of [{}, { NODE_ENV: "production" }, { NODE_ENV: "prod" }]) {
+      for (const url of remote) {
+        expect(
+          issues({ ...base, ...env, SESSION_STORE_URL: url }).join("\n"),
+          url,
+        ).toContain("SESSION_STORE_URL: plaintext");
+      }
+    }
+  });
+
+  it("accepts it with SESSION_STORE_ALLOW_PLAINTEXT=true", () => {
+    for (const url of remote) {
       expect(
         loadConfig({
-          ...prod,
+          ...base,
+          NODE_ENV: "production",
           SESSION_STORE_URL: url,
           SESSION_STORE_ALLOW_PLAINTEXT: "true",
         }).session.storeUrl,
@@ -385,15 +393,39 @@ describe("SESSION_STORE_URL in production", () => {
     }
   });
 
-  it("always accepts rediss:// and valkeys://, and plaintext outside production", () => {
-    for (const url of ["rediss://valkey:6379", "valkeys://valkey:6379"]) {
+  it("always accepts TLS URLs and plaintext to localhost, 127.0.0.0/8 and ::1", () => {
+    for (const url of [
+      "rediss://valkey:6379",
+      "valkeys://valkey:6379",
+      "redis://localhost:6379",
+      "valkey://127.0.0.1:6379",
+      "redis://127.5.5.5:6379",
+      "redis://[::1]:6379",
+    ]) {
       expect(
-        loadConfig({ ...prod, SESSION_STORE_URL: url }).session.storeUrl,
+        loadConfig({ ...base, NODE_ENV: "production", SESSION_STORE_URL: url })
+          .session.storeUrl,
+        url,
       ).toBe(url);
     }
+  });
+});
+
+describe("SESSION_COOKIE_NAME", () => {
+  it("must start with __Host- (ASVS 3.3.3)", () => {
     expect(
-      loadConfig({ ...base, SESSION_STORE_URL: "redis://localhost:6379" })
-        .session.storeUrl,
-    ).toBe("redis://localhost:6379");
+      issues({ ...base, SESSION_COOKIE_NAME: "sid" }).join("\n"),
+    ).toContain("SESSION_COOKIE_NAME");
+    expect(
+      issues({ ...base, SESSION_COOKIE_NAME: "__Secure-sid" }),
+    ).not.toEqual([]);
+    expect(
+      loadConfig({ ...base, SESSION_COOKIE_NAME: "__Host-Http-app" }).session
+        .cookieName,
+    ).toBe("__Host-Http-app");
+    expect(
+      loadConfig({ ...base, SESSION_COOKIE_NAME: "__Host-app" }).session
+        .cookieName,
+    ).toBe("__Host-app");
   });
 });

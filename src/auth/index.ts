@@ -179,6 +179,7 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
           refreshToken: null,
           accessExpiresAt: 0,
           createdAt: now,
+          version: 0,
           absoluteExpiresAt: absoluteExpiry(
             config,
             now,
@@ -209,8 +210,11 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
     if (session === null) {
       return reply.code(401).send({ error: "unauthenticated" });
     }
-    const { sub, idToken, refreshToken } = session.data;
-    await app.bffStore.destroy(session.id);
+    const { sub, idToken } = session.data;
+    // Revoke the refresh token stored at the instant of the logout, not the
+    // one in this request's snapshot (a concurrent refresh may have rotated it).
+    const taken = await app.bffStore.take(session.id);
+    const refreshToken = taken?.refreshToken ?? null;
     clearSessionCookie(reply, config);
     securityLog(request.log, "logout", { sub, ip: request.ip });
     let logoutUrl = `${config.publicOrigin}/`;
@@ -271,13 +275,16 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
       if (!body.success) {
         return reject("missing logout_token");
       }
+      // Not the token's fault: the IdP must see a 5xx and retry later.
+      let keys: Awaited<ReturnType<typeof app.bffOidc.jwks>>;
+      try {
+        keys = await app.bffOidc.jwks();
+      } catch (error) {
+        return unavailable(request, reply, error);
+      }
       let logout: Awaited<ReturnType<typeof verifyLogoutToken>>;
       try {
-        logout = await verifyLogoutToken(
-          body.data.logout_token,
-          config,
-          await app.bffOidc.jwks(),
-        );
+        logout = await verifyLogoutToken(body.data.logout_token, config, keys);
       } catch (error) {
         return reject((error as Error).name);
       }
