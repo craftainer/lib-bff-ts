@@ -32,7 +32,11 @@ function register(bff: TestBff): void {
     if (request.bffSession === null) {
       return reply.code(401).send({ error: "no session" });
     }
-    return { token: await request.bffSession.accessTokenFor("crud") };
+    return {
+      token: await request.bffSession.accessTokenFor(
+        (request.query as { u?: string }).u ?? "crud",
+      ),
+    };
   });
 }
 
@@ -244,5 +248,216 @@ describe("token lifetimes", () => {
     const data = { absoluteExpiresAt: 110.5 } as SessionData;
     expect(sessionTtlSeconds(config, data, 100)).toBe(10);
     expect(sessionTtlSeconds(config, data, 200)).toBe(1);
+  });
+});
+
+function storeWith(
+  inner: SessionStore,
+  overrides: Record<string, (...args: never[]) => unknown>,
+): SessionStore {
+  return new Proxy(inner, {
+    get(target, prop: string) {
+      if (prop in overrides) {
+        return overrides[prop];
+      }
+      const value = Reflect.get(target, prop) as unknown;
+      return typeof value === "function"
+        ? (value as (...a: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
+}
+
+async function refreshGrantStatus(refreshToken: string): Promise<number> {
+  const res = await fetch(`${idp.issuer}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+    }),
+  });
+  return res.status;
+}
+
+describe("refresh that loses the race against a logout", () => {
+  async function race(): Promise<{
+    bff: TestBff;
+    rotated: () => string | undefined;
+  }> {
+    const inner = createMemorySessionStore();
+    let rotated: string | undefined;
+    const racing = storeWith(inner, {
+      replace: (async (id: string, data: SessionData, ttlMs: number) => {
+        rotated = data.refreshToken ?? undefined;
+        await inner.destroy(id);
+        return inner.replace(id, data, ttlMs);
+      }) as never,
+    });
+    const { bff, id, data } = await loggedIn(racing);
+    await inner.put(id, { ...data, accessExpiresAt: 0 }, 600);
+    const res = await bff.browser.request("GET", "/bff/test-token");
+    expect(res.statusCode).toBe(401);
+    return { bff, rotated: () => rotated };
+  }
+
+  it("revokes the rotated refresh token it was about to store", async () => {
+    const { bff, rotated } = await race();
+    expect(rotated()).toBeDefined();
+    expect(await refreshGrantStatus(rotated() as string)).toBe(400);
+    await bff.app.close();
+  });
+
+  it("logs when that revocation fails", async () => {
+    idp.revocationDelayMs = 2600;
+    try {
+      const { bff } = await race();
+      expect(
+        bff.logs.some((l) => l["event"] === "token_revocation_failed"),
+      ).toBe(true);
+      await bff.app.close();
+    } finally {
+      idp.revocationDelayMs = 0;
+    }
+  });
+});
+
+describe("bounded refresh", () => {
+  it("answers 503 and keeps the session when the IdP stalls past OIDC_TIMEOUT_SECONDS", async () => {
+    const store = createMemorySessionStore();
+    const bff = await makeBff(idp, {
+      store,
+      env: { OIDC_TIMEOUT_SECONDS: "1" },
+    });
+    register(bff);
+    await bff.browser.login();
+    const id = bff.browser.bffJar.get(COOKIE) as string;
+    const data = (await store.get(id)) as SessionData;
+    await store.put(id, { ...data, accessExpiresAt: 0 }, 600);
+    idp.tokenDelayMs = 2500;
+    try {
+      const started = Date.now();
+      const res = await bff.browser.request("GET", "/bff/test-token");
+      expect(res.statusCode).toBe(503);
+      expect(res.json()).toEqual({ error: "idp_unavailable" });
+      expect(Date.now() - started).toBeLessThan(2400);
+      expect(await store.get(id)).toBeDefined();
+    } finally {
+      idp.tokenDelayMs = 0;
+    }
+    await bff.app.close();
+  });
+
+  it("refuses an IdP timeout that is not below the refresh lock TTL", () => {
+    expect(() => testConfig(idp, { OIDC_TIMEOUT_SECONDS: "30" })).toThrow(
+      /OIDC_TIMEOUT_SECONDS: must be below the 30 s refresh lock TTL/,
+    );
+    expect(
+      testConfig(idp, { OIDC_TIMEOUT_SECONDS: "29" }).oidc.timeoutSeconds,
+    ).toBe(29);
+  });
+});
+
+describe("session cookie hygiene", () => {
+  const setCookieFor = (res: { setCookies: string[] }): string | undefined =>
+    res.setCookies.find((c) => c.startsWith(`${COOKIE}=`));
+
+  it("drops a cookie that is not a session ID without touching the store", async () => {
+    let reads = 0;
+    const store = storeWith(createMemorySessionStore(), {
+      get: (async () => {
+        reads += 1;
+        return undefined;
+      }) as never,
+    });
+    const bff = await makeBff(idp, { store });
+    bff.browser.bffJar.set(COOKIE, "short");
+    const res = await bff.browser.request("GET", "/bff/user");
+    expect(res.statusCode).toBe(401);
+    expect(setCookieFor(res)).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/i);
+    expect(reads).toBe(0);
+    await bff.app.close();
+  });
+
+  it("drops the cookie of an unknown or absolutely expired session", async () => {
+    const store = createMemorySessionStore();
+    const bff = await makeBff(idp, { store });
+    const unknown = "U".repeat(43);
+    bff.browser.bffJar.set(COOKIE, unknown);
+    const res = await bff.browser.request("GET", "/bff/user");
+    expect(setCookieFor(res)).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/i);
+
+    const { id, data } = await loggedIn(store).then(async (l) => {
+      await l.bff.app.close();
+      return l;
+    });
+    await store.put(id, { ...data, absoluteExpiresAt: 1 }, 600);
+    bff.browser.bffJar.set(COOKIE, id);
+    const expired = await bff.browser.request("GET", "/bff/user");
+    expect(expired.statusCode).toBe(401);
+    expect(setCookieFor(expired)).toMatch(
+      /Max-Age=0|Expires=Thu, 01 Jan 1970/i,
+    );
+    expect(await store.get(id)).toBeUndefined();
+    await bff.app.close();
+  });
+});
+
+describe("upstream lookup", () => {
+  it("only knows configured upstream names, not inherited properties", async () => {
+    const store = createMemorySessionStore();
+    const { bff } = await loggedIn(store);
+    for (const name of ["constructor", "toString", "__proto__"]) {
+      const res = await bff.browser.request("GET", `/bff/test-token?u=${name}`);
+      expect(res.statusCode, name).toBe(500);
+    }
+    expect(
+      (await bff.browser.request("GET", "/bff/test-token?u=crud")).statusCode,
+    ).toBe(200);
+    expect(Object.getPrototypeOf(bff.config.upstreams)).toBeNull();
+    await bff.app.close();
+  });
+});
+
+describe("error bodies", () => {
+  it("answers 429 with rate_limited and hides framework error codes", async () => {
+    const bff = await makeBff(idp, { env: { RATE_LIMIT_MAX: "1" } });
+    await bff.browser.request("GET", "/bff/callback");
+    const limited = await bff.browser.request("GET", "/bff/callback");
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({ error: "rate_limited" });
+    await bff.app.close();
+  });
+});
+
+describe("no-store on canonical /bff paths", () => {
+  it("also covers percent-encoded spellings", async () => {
+    const bff = await makeBff(idp);
+    const res = await bff.browser.request("GET", "/%62ff/config");
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    await bff.app.close();
+  });
+});
+
+describe("roles claims are validated one part at a time", () => {
+  it("keeps valid realm roles when resource_access is malformed, and the reverse", () => {
+    expect(
+      extractRoles(
+        { realm_access: { roles: ["admin"] }, resource_access: { foo: {} } },
+        "opaque",
+      ),
+    ).toEqual({ realm: ["admin"] });
+    expect(
+      extractRoles(
+        {
+          realm_access: { roles: "admin" },
+          resource_access: { foo: { roles: ["r"] } },
+        },
+        "opaque",
+      ),
+    ).toEqual({ foo: ["r"] });
   });
 });

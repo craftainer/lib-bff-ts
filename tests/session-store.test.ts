@@ -159,6 +159,40 @@ describe("KvSessionStore", () => {
     expect(await store.claimOnce("jti:1", 60)).toBe(true);
   });
 
+  it("gives up a claim so the claimed work can be retried", async () => {
+    const { store } = setup();
+    expect(await store.claimOnce("jti:2", 60)).toBe(true);
+    await store.releaseClaim("jti:2");
+    expect(await store.claimOnce("jti:2", 60)).toBe(true);
+  });
+
+  it("keeps a session that logs in during a back-channel logout reachable through its index", async () => {
+    const { store, kv } = setup();
+    await store.put("old", data(), 60);
+    // A login lands between the logout's read of the index and its end: simulate
+    // it by adding the new session as the first destroy runs.
+    const realDestroy = store.destroy.bind(store);
+    store.destroy = async (id: string): Promise<boolean> => {
+      await store.put("new", data(), 60);
+      return realDestroy(id);
+    };
+    expect(await store.destroyBySub("alice")).toBe(1);
+    expect(await kv.smembers("sub:alice")).toEqual(["new"]);
+    expect(await kv.smembers("sid:sid-1")).toEqual(["new"]);
+    store.destroy = realDestroy;
+    expect(await store.destroyBySid("sid-1")).toBe(1);
+  });
+
+  it("finds every session of a sid or sub for back-channel logout", async () => {
+    const { store } = setup();
+    for (const id of ["a", "b", "c"]) {
+      await store.put(id, data(), 60);
+    }
+    expect(await store.destroyBySid("sid-1")).toBe(3);
+    await store.put("d", data({ sid: null }), 60);
+    expect(await store.destroyBySub("alice")).toBe(1);
+  });
+
   it("pings and closes", async () => {
     const { store } = setup();
     await expect(store.ping()).resolves.toBeUndefined();
@@ -193,13 +227,81 @@ describe("MemoryKv", () => {
     await kv.set("x", "1", { ttlMs: 10 });
     expect(await kv.delIfEquals("x", "2")).toBe(false);
     expect(await kv.delIfEquals("x", "1")).toBe(true);
-    await kv.sadd("set", "m1");
-    await kv.sadd("set", "m2");
-    await kv.srem("set", "m1");
-    await kv.srem("missing", "m1");
+    expect(
+      await kv.multi([
+        { op: "sadd", key: "set", member: "m1", ttlMs: 50 },
+        { op: "sadd", key: "set", member: "m1", ttlMs: 50 },
+        { op: "sadd", key: "set", member: "m2", ttlMs: 50 },
+        { op: "srem", key: "set", member: "m1" },
+        { op: "srem", key: "set", member: "nope" },
+        { op: "srem", key: "missing", member: "m1" },
+        { op: "set", key: "s", value: "1", ttlMs: 50 },
+        { op: "set", key: "gone", value: "1", ttlMs: 50, onlyIfExists: true },
+        { op: "del", key: "s" },
+        { op: "del", key: "s" },
+      ]),
+    ).toEqual([1, 0, 1, 1, 0, 0, true, false, 1, 0]);
     expect(await kv.smembers("set")).toEqual(["m2"]);
+    now += 51;
+    expect(await kv.smembers("set")).toEqual([]);
     expect(await kv.smembers("missing")).toEqual([]);
     await expect(kv.ping()).resolves.toBeUndefined();
     await expect(kv.quit()).resolves.toBeUndefined();
+  });
+});
+
+/** A KvClient that applies nothing when its multi fails, and records the calls made outside multi. */
+function failing(kv: MemoryKv): { client: KvClient; direct: string[] } {
+  const direct: string[] = [];
+  const client = new Proxy(kv, {
+    get(target, prop: string) {
+      if (prop === "multi") {
+        return (): Promise<unknown[]> =>
+          Promise.reject(new Error("connection lost mid-transaction"));
+      }
+      const value = Reflect.get(target, prop) as unknown;
+      return typeof value === "function"
+        ? (...args: unknown[]) => {
+            if (["set", "del", "sadd", "srem", "pexpire"].includes(prop)) {
+              direct.push(prop);
+            }
+            return (value as (...a: unknown[]) => unknown).apply(target, args);
+          }
+        : value;
+    },
+  }) as unknown as KvClient;
+  return { client, direct };
+}
+
+describe("atomic session writes", () => {
+  it("leaves no half state when the transaction fails: no session, no index entry", async () => {
+    const kv = new MemoryKv();
+    const { client, direct } = failing(kv);
+    const store = new KvSessionStore(client, { indexTtlSeconds: 3600 });
+    await expect(store.put("s1", data(), 60)).rejects.toThrow(
+      "connection lost",
+    );
+    await expect(store.replace("s1", data(), 60_000)).rejects.toThrow(
+      "connection lost",
+    );
+    expect(await kv.get("sess:s1")).toBeNull();
+    expect(await kv.smembers("sub:alice")).toEqual([]);
+    expect(await kv.smembers("sid:sid-1")).toEqual([]);
+    expect(direct).toEqual([]);
+  });
+
+  it("destroy changes the session and its indexes in one transaction", async () => {
+    const kv = new MemoryKv();
+    await new KvSessionStore(kv, { indexTtlSeconds: 3600 }).put(
+      "s1",
+      data(),
+      60,
+    );
+    const { client, direct } = failing(kv);
+    const store = new KvSessionStore(client, { indexTtlSeconds: 3600 });
+    await expect(store.destroy("s1")).rejects.toThrow("connection lost");
+    expect(await kv.get("sess:s1")).not.toBeNull();
+    expect(await kv.smembers("sub:alice")).toEqual(["s1"]);
+    expect(direct).toEqual([]);
   });
 });

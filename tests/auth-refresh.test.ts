@@ -158,12 +158,12 @@ describe("access token refresh", () => {
       createdAt: 0,
       absoluteExpiresAt: Date.now() / 1000 + 600,
     };
-    await down.store.put("s1", data, 600);
-    down.browser.bffJar.set("__Host-Http-session", "s1");
+    await down.store.put("S".repeat(43), data, 600);
+    down.browser.bffJar.set("__Host-Http-session", "S".repeat(43));
     const res = await down.browser.request("GET", "/bff/test-token");
     expect(res.statusCode).toBe(503);
     expect(res.json()).toEqual({ error: "idp_unavailable" });
-    expect(await down.store.get("s1")).toBeDefined();
+    expect(await down.store.get("S".repeat(43))).toBeDefined();
     await down.app.close();
   });
 

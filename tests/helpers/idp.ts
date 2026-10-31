@@ -26,6 +26,8 @@ export interface TestIdp {
   ): Promise<string>;
   /** Milliseconds the token revocation endpoint stalls before answering (0 = none). */
   revocationDelayMs: number;
+  /** Milliseconds the token endpoint stalls before answering (0 = none). */
+  tokenDelayMs: number;
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
   close(): Promise<void>;
@@ -118,10 +120,13 @@ export async function startIdp(
     },
   });
 
-  const delays = { revocationMs: 0 };
+  const delays = { revocationMs: 0, tokenMs: 0 };
   provider.use(async (ctx, next) => {
     if (ctx.path === "/token/revocation" && delays.revocationMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delays.revocationMs));
+    }
+    if (ctx.path === "/token" && delays.tokenMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delays.tokenMs));
     }
     await next();
   });
@@ -137,6 +142,12 @@ export async function startIdp(
     },
     set revocationDelayMs(value: number) {
       delays.revocationMs = value;
+    },
+    get tokenDelayMs() {
+      return delays.tokenMs;
+    },
+    set tokenDelayMs(value: number) {
+      delays.tokenMs = value;
     },
     otherKey: other.privateKey,
     async sign(payload, opts = {}) {

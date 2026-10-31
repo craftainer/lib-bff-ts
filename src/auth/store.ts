@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { MemoryKv, createValkeyKv, type KvClient } from "./kv.ts";
+import { MemoryKv, createValkeyKv, type KvClient, type KvOp } from "./kv.ts";
 
 /** What a session holds server-side. Tokens never reach the browser. */
 export interface SessionData {
@@ -80,6 +80,8 @@ export interface SessionStore {
   takeTransaction(state: string): Promise<LoginTransaction | undefined>;
   /** Returns true the first time a key is claimed within its TTL (replay protection). */
   claimOnce(key: string, ttlSeconds: number): Promise<boolean>;
+  /** Gives up a {@link claimOnce} claim (the claimed work failed and may be retried). */
+  releaseClaim(key: string): Promise<void>;
   /** Rejects when the backing store is unreachable. */
   ping(): Promise<void>;
   close(): Promise<void>;
@@ -118,25 +120,52 @@ export class KvSessionStore implements SessionStore {
     this.#indexTtlMs = opts.indexTtlSeconds * 1000;
   }
 
-  async put(id: string, data: SessionData, ttlSeconds: number): Promise<void> {
-    await this.#kv.set(`sess:${id}`, JSON.stringify(data), {
-      ttlMs: ttlSeconds * 1000,
-    });
-    const indexes = [
+  /** The index entries of a session: `sub:` always, `sid:` when the IdP issued one. */
+  #indexKeys(data: SessionData): string[] {
+    return [
       `sub:${data.sub}`,
       ...(data.sid === null ? [] : [`sid:${data.sid}`]),
     ];
-    for (const key of indexes) {
-      await this.#kv.sadd(key, id);
-      await this.#kv.pexpire(key, this.#indexTtlMs);
-    }
   }
 
-  replace(id: string, data: SessionData, ttlMs: number): Promise<boolean> {
-    return this.#kv.set(`sess:${id}`, JSON.stringify(data), {
-      ttlMs,
-      onlyIfExists: true,
-    });
+  async put(id: string, data: SessionData, ttlSeconds: number): Promise<void> {
+    // One atomic step: a session is never live without its index entries.
+    await this.#kv.multi([
+      {
+        op: "set",
+        key: `sess:${id}`,
+        value: JSON.stringify(data),
+        ttlMs: ttlSeconds * 1000,
+      },
+      ...this.#indexKeys(data).map((key): KvOp => ({
+        op: "sadd",
+        key,
+        member: id,
+        ttlMs: this.#indexTtlMs,
+      })),
+    ]);
+  }
+
+  /**
+   * `SET ... XX` as the only op of a MULTI: Valkey checks existence and
+   * writes in one step, so a concurrent destroy can never be undone. The
+   * index entries are unchanged by a refresh (same `sub` and `sid`).
+   */
+  async replace(
+    id: string,
+    data: SessionData,
+    ttlMs: number,
+  ): Promise<boolean> {
+    const [written] = await this.#kv.multi([
+      {
+        op: "set",
+        key: `sess:${id}`,
+        value: JSON.stringify(data),
+        ttlMs,
+        onlyIfExists: true,
+      },
+    ]);
+    return written === true;
   }
 
   async get(id: string): Promise<SessionData | undefined> {
@@ -149,14 +178,17 @@ export class KvSessionStore implements SessionStore {
 
   async destroy(id: string): Promise<boolean> {
     const data = await this.get(id);
-    const existed = (await this.#kv.del(`sess:${id}`)) > 0;
-    if (data !== undefined) {
-      await this.#kv.srem(`sub:${data.sub}`, id);
-      if (data.sid !== null) {
-        await this.#kv.srem(`sid:${data.sid}`, id);
-      }
-    }
-    return existed;
+    const [deleted] = await this.#kv.multi([
+      { op: "del", key: `sess:${id}` },
+      ...(data === undefined
+        ? []
+        : this.#indexKeys(data).map((key): KvOp => ({
+            op: "srem",
+            key,
+            member: id,
+          }))),
+    ]);
+    return (deleted as number) > 0;
   }
 
   destroyBySid(sid: string): Promise<number> {
@@ -173,8 +205,11 @@ export class KvSessionStore implements SessionStore {
       if (await this.destroy(id)) {
         count += 1;
       }
+      // Also drops ids whose session already expired (destroy found no data).
+      await this.#kv.multi([{ op: "srem", key, member: id }]);
     }
-    await this.#kv.del(key);
+    // No `del(key)` here: destroy() removes each id from the index, and a
+    // session added meanwhile must keep its entry. The set expires by its TTL.
     return count;
   }
 
@@ -208,6 +243,10 @@ export class KvSessionStore implements SessionStore {
       ttlMs: ttlSeconds * 1000,
       nx: true,
     });
+  }
+
+  async releaseClaim(key: string): Promise<void> {
+    await this.#kv.del(`once:${key}`);
   }
 
   ping(): Promise<void> {

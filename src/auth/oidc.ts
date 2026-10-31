@@ -27,7 +27,7 @@ export function createOidcClient(config: BffConfig): OidcClient {
       config.oidc.clientSecret,
       undefined,
       {
-        timeout: 10,
+        timeout: config.oidc.timeoutSeconds,
         ...(config.oidc.allowInsecure
           ? { execute: [client.allowInsecureRequests] }
           : {}),
@@ -55,4 +55,40 @@ export function createOidcClient(config: BffConfig): OidcClient {
       return keys;
     },
   };
+}
+
+/** The longest a logout waits for the IdP to revoke a token. */
+export const REVOCATION_TIMEOUT_MS = 2000;
+
+/**
+ * Best-effort RFC 7009 revocation of a refresh token. Does nothing when the
+ * IdP advertises no `revocation_endpoint`. Waits at most
+ * {@link REVOCATION_TIMEOUT_MS}; resolves to the error on failure, never
+ * rejects, so callers log it and carry on.
+ */
+export async function revokeRefreshToken(
+  configuration: client.Configuration,
+  refreshToken: string,
+): Promise<Error | undefined> {
+  if (configuration.serverMetadata().revocation_endpoint === undefined) {
+    return undefined;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      client.tokenRevocation(configuration, refreshToken, {
+        token_type_hint: "refresh_token",
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error("revocation timed out"));
+        }, REVOCATION_TIMEOUT_MS);
+      }),
+    ]);
+    return undefined;
+  } catch (error) {
+    return error as Error;
+  } finally {
+    clearTimeout(timer);
+  }
 }

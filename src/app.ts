@@ -46,8 +46,14 @@ export async function createBff(
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const status = error.statusCode ?? 500;
-    if (error instanceof BffHttpError || status < 500) {
+    if (error instanceof BffHttpError) {
       return reply.code(status).send({ error: error.code });
+    }
+    if (status < 500) {
+      // Never expose framework error codes (FST_*); the status says enough.
+      return reply
+        .code(status)
+        .send({ error: status === 429 ? "rate_limited" : "request_failed" });
     }
     request.log.error({ err: error }, "request failed");
     return reply.code(500).send({ error: "internal_error" });

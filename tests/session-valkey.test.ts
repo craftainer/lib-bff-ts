@@ -53,8 +53,6 @@ describe("ValkeyKv", () => {
     expect(await kv.getDel("k")).toBe("g");
     expect(await kv.del("a", "b")).toBe(2);
     expect(await kv.pexpire("k", 9)).toBe(true);
-    await kv.sadd("s", "m");
-    await kv.srem("s", "m");
     expect(await kv.smembers("s")).toEqual(["a"]);
     expect(await kv.delIfEquals("k", "v")).toBe(true);
     await kv.ping();
@@ -67,8 +65,6 @@ describe("ValkeyKv", () => {
       ["getdel", "k"],
       ["del", "a", "b"],
       ["pexpire", "k", 9],
-      ["sadd", "s", "m"],
-      ["srem", "s", "m"],
       ["smembers", "s"],
       [
         "eval",
@@ -112,5 +108,62 @@ describe("createValkeyKv", () => {
     }
     const store = createValkeySessionStore("redis://localhost:1", 60);
     await store.close();
+  });
+});
+
+describe("ValkeyKv.multi", () => {
+  function fakeTx(replies: [Error | null, unknown][] | null): {
+    kv: ValkeyKv;
+    queued: unknown[][];
+  } {
+    const queued: unknown[][] = [];
+    const tx: Record<string, unknown> = {};
+    for (const command of ["set", "del", "sadd", "pexpire", "srem"]) {
+      tx[command] = (...args: unknown[]) => {
+        queued.push([command, ...args]);
+        return tx;
+      };
+    }
+    tx["exec"] = () => Promise.resolve(replies);
+    const client = { multi: () => tx } as unknown as Valkey;
+    return { kv: new ValkeyKv(client), queued };
+  }
+
+  it("queues every op in one MULTI and maps the replies back to the ops", async () => {
+    const { kv, queued } = fakeTx([
+      [null, "OK"],
+      [null, null],
+      [null, 1],
+      [null, 1],
+      [null, 1],
+      [null, 0],
+    ]);
+    const results = await kv.multi([
+      { op: "set", key: "a", value: "1", ttlMs: 10.7 },
+      { op: "set", key: "b", value: "2", ttlMs: 10, onlyIfExists: true },
+      { op: "del", key: "c" },
+      { op: "sadd", key: "s", member: "m", ttlMs: 99 },
+      { op: "srem", key: "s", member: "m" },
+    ]);
+    expect(results).toEqual([true, false, 1, 1, 0]);
+    expect(queued).toEqual([
+      ["set", "a", "1", "PX", 10],
+      ["set", "b", "2", "PX", 10, "XX"],
+      ["del", "c"],
+      ["sadd", "s", "m"],
+      ["pexpire", "s", 99],
+      ["srem", "s", "m"],
+    ]);
+  });
+
+  it("rejects when EXEC was aborted or any command failed", async () => {
+    await expect(
+      fakeTx(null).kv.multi([{ op: "del", key: "k" }]),
+    ).rejects.toThrow("MULTI aborted");
+    await expect(
+      fakeTx([[new Error("OOM"), undefined]]).kv.multi([
+        { op: "del", key: "k" },
+      ]),
+    ).rejects.toThrow("OOM");
   });
 });
