@@ -1,7 +1,15 @@
 import { z } from "zod";
 
 /** HTTP methods an upstream may allow. */
-const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
+const METHODS = [
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "OPTIONS",
+] as const;
 
 /** Name of the login-transaction cookie (carries only the random `state`). */
 export const LOGIN_COOKIE_NAME = "__Host-Http-login";
@@ -109,7 +117,9 @@ const bool = (fallback: boolean): z.ZodType<boolean> =>
   z
     .preprocess(
       (v) => (v === undefined ? String(fallback) : v),
-      z.enum(["true", "false", "1", "0"]).transform((v) => v === "true" || v === "1"),
+      z
+        .enum(["true", "false", "1", "0"])
+        .transform((v) => v === "true" || v === "1"),
     )
     .pipe(z.boolean());
 
@@ -145,12 +155,24 @@ const upstreamSchema = z
   .strict()
   .superRefine((u, ctx) => {
     const parsed = new URL(u.url);
-    if (parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") {
-      ctx.addIssue({ code: "custom", path: ["url"], message: "must not contain credentials, query or fragment" });
+    if (
+      parsed.username !== "" ||
+      parsed.password !== "" ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["url"],
+        message: "must not contain credentials, query or fragment",
+      });
     }
   });
 
-const upstreamsSchema = z.record(z.string().regex(/^[a-z][a-z0-9-]*$/, "name must match [a-z][a-z0-9-]*"), upstreamSchema);
+const upstreamsSchema = z.record(
+  z.string().regex(/^[a-z][a-z0-9-]*$/, "name must match [a-z][a-z0-9-]*"),
+  upstreamSchema,
+);
 
 const envSchema = z.object({
   NODE_ENV: optionalString,
@@ -201,7 +223,10 @@ function isHttpsOrAllowed(url: string, insecure: boolean): boolean {
   return new URL(url).protocol === "https:" || insecure;
 }
 
-function parseUpstreams(raw: string | undefined, issues: string[]): Record<string, UpstreamConfig> {
+function parseUpstreams(
+  raw: string | undefined,
+  issues: string[],
+): Record<string, UpstreamConfig> {
   if (raw === undefined) {
     return {};
   }
@@ -222,7 +247,11 @@ function parseUpstreams(raw: string | undefined, issues: string[]): Record<strin
   return parsed.data;
 }
 
-function publicOrigin(raw: string, production: boolean, issues: string[]): string {
+function publicOrigin(
+  raw: string,
+  production: boolean,
+  issues: string[],
+): string {
   let url: URL;
   try {
     url = new URL(raw);
@@ -231,19 +260,29 @@ function publicOrigin(raw: string, production: boolean, issues: string[]): strin
     return raw;
   }
   if (url.origin === "null" || raw.replace(/\/$/, "") !== url.origin) {
-    issues.push("PUBLIC_ORIGIN: must be an origin (scheme, host, optional port) with no path, query or credentials");
-  } else if (url.protocol !== "https:" && (production || !LOOPBACK_HOSTS.has(url.hostname))) {
-    issues.push("PUBLIC_ORIGIN: must be https (plain http only for localhost outside production)");
+    issues.push(
+      "PUBLIC_ORIGIN: must be an origin (scheme, host, optional port) with no path, query or credentials",
+    );
+  } else if (
+    url.protocol !== "https:" &&
+    (production || !LOOPBACK_HOSTS.has(url.hostname))
+  ) {
+    issues.push(
+      "PUBLIC_ORIGIN: must be https (plain http only for localhost outside production)",
+    );
   }
   return url.origin;
 }
 
 function checkOidc(env: Env, allowInsecure: boolean, issues: string[]): string {
   if (!isHttpsOrAllowed(env.OIDC_ISSUER, allowInsecure)) {
-    issues.push("OIDC_ISSUER: must be https (set OIDC_ALLOW_INSECURE=true for development)");
+    issues.push(
+      "OIDC_ISSUER: must be https (set OIDC_ALLOW_INSECURE=true for development)",
+    );
   }
   const discoveryUrl =
-    env.OIDC_DISCOVERY_URL ?? `${env.OIDC_ISSUER.replace(/\/+$/, "")}${DISCOVERY_SUFFIX}`;
+    env.OIDC_DISCOVERY_URL ??
+    `${env.OIDC_ISSUER.replace(/\/+$/, "")}${DISCOVERY_SUFFIX}`;
   let parsed: URL | undefined;
   try {
     parsed = new URL(discoveryUrl);
@@ -251,11 +290,19 @@ function checkOidc(env: Env, allowInsecure: boolean, issues: string[]): string {
     issues.push("OIDC_DISCOVERY_URL: not a valid URL");
   }
   if (parsed !== undefined) {
-    if (!parsed.pathname.endsWith(DISCOVERY_SUFFIX) || parsed.search !== "" || parsed.hash !== "") {
-      issues.push(`OIDC_DISCOVERY_URL: must be the full ...${DISCOVERY_SUFFIX} URL`);
+    if (
+      !parsed.pathname.endsWith(DISCOVERY_SUFFIX) ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    ) {
+      issues.push(
+        `OIDC_DISCOVERY_URL: must be the full ...${DISCOVERY_SUFFIX} URL`,
+      );
     }
     if (!isHttpsOrAllowed(discoveryUrl, allowInsecure)) {
-      issues.push("OIDC_DISCOVERY_URL: must be https (set OIDC_ALLOW_INSECURE=true for development)");
+      issues.push(
+        "OIDC_DISCOVERY_URL: must be https (set OIDC_ALLOW_INSECURE=true for development)",
+      );
     }
   }
   if (!env.OIDC_SCOPES.split(/\s+/).includes("openid")) {
@@ -266,7 +313,10 @@ function checkOidc(env: Env, allowInsecure: boolean, issues: string[]): string {
 
 function checkAnalytics(env: Env, issues: string[]): void {
   if (env.ANALYTICS_ENABLED && env.ANALYTICS_BACKEND === "umami") {
-    if (env.ANALYTICS_ENDPOINT === undefined || !URL.canParse(env.ANALYTICS_ENDPOINT)) {
+    if (
+      env.ANALYTICS_ENDPOINT === undefined ||
+      !URL.canParse(env.ANALYTICS_ENDPOINT)
+    ) {
       issues.push("ANALYTICS_ENDPOINT: required (a URL) for the umami backend");
     }
     if (env.ANALYTICS_SITE_ID === undefined) {
@@ -275,17 +325,33 @@ function checkAnalytics(env: Env, issues: string[]): void {
   }
 }
 
-function checkSecurityTxt(env: Env, production: boolean, issues: string[]): void {
+function checkSecurityTxt(
+  env: Env,
+  production: boolean,
+  issues: string[],
+): void {
   for (const contact of env.SECURITY_TXT_CONTACT) {
     if (!/^(https:\/\/|mailto:|tel:)/.test(contact)) {
-      issues.push("SECURITY_TXT_CONTACT: each entry must be an https:, mailto: or tel: URI");
+      issues.push(
+        "SECURITY_TXT_CONTACT: each entry must be an https:, mailto: or tel: URI",
+      );
     }
   }
-  if (env.SECURITY_TXT_EXPIRES !== undefined && !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES).success) {
+  if (
+    env.SECURITY_TXT_EXPIRES !== undefined &&
+    !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES)
+      .success
+  ) {
     issues.push("SECURITY_TXT_EXPIRES: must be an ISO 8601 date-time");
   }
-  if (production && env.SECURITY_TXT_CONTACT.length > 0 && env.SECURITY_TXT_EXPIRES === undefined) {
-    issues.push("SECURITY_TXT_EXPIRES: required in production when SECURITY_TXT_CONTACT is set (RFC 9116)");
+  if (
+    production &&
+    env.SECURITY_TXT_CONTACT.length > 0 &&
+    env.SECURITY_TXT_EXPIRES === undefined
+  ) {
+    issues.push(
+      "SECURITY_TXT_EXPIRES: required in production when SECURITY_TXT_CONTACT is set (RFC 9116)",
+    );
   }
 }
 
@@ -302,7 +368,9 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
   }
   const result = envSchema.safeParse(cleaned);
   if (!result.success) {
-    throw new ConfigError(result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`));
+    throw new ConfigError(
+      result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+    );
   }
   const e = result.data;
   const issues: string[] = [];
@@ -312,7 +380,9 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
     issues.push("OIDC_ALLOW_INSECURE: refused when NODE_ENV=production");
   }
   if (e.SESSION_IDLE_SECONDS > e.SESSION_ABSOLUTE_SECONDS) {
-    issues.push("SESSION_IDLE_SECONDS: must not exceed SESSION_ABSOLUTE_SECONDS");
+    issues.push(
+      "SESSION_IDLE_SECONDS: must not exceed SESSION_ABSOLUTE_SECONDS",
+    );
   }
   if (e.SESSION_COOKIE_NAME === LOGIN_COOKIE_NAME) {
     issues.push(`SESSION_COOKIE_NAME: must differ from ${LOGIN_COOKIE_NAME}`);
@@ -322,7 +392,11 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
   const upstreams = parseUpstreams(e.BFF_UPSTREAMS, issues);
   checkAnalytics(e, issues);
   checkSecurityTxt(e, production, issues);
-  if (e.CHANGE_PASSWORD_URL !== undefined && !/^https:\/\//.test(e.CHANGE_PASSWORD_URL) && !(e.OIDC_ALLOW_INSECURE && /^http:\/\//.test(e.CHANGE_PASSWORD_URL))) {
+  if (
+    e.CHANGE_PASSWORD_URL !== undefined &&
+    !e.CHANGE_PASSWORD_URL.startsWith("https://") &&
+    !(e.OIDC_ALLOW_INSECURE && e.CHANGE_PASSWORD_URL.startsWith("http://"))
+  ) {
     issues.push("CHANGE_PASSWORD_URL: must be an https URL");
   }
   if (issues.length > 0) {
@@ -353,7 +427,10 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
       accessTokenSkewSeconds: 30,
       refreshLock: { ttlMs: 10_000, waitMs: 5_000, pollMs: 25 },
     },
-    rateLimit: { max: e.RATE_LIMIT_MAX, windowSeconds: e.RATE_LIMIT_WINDOW_SECONDS },
+    rateLimit: {
+      max: e.RATE_LIMIT_MAX,
+      windowSeconds: e.RATE_LIMIT_WINDOW_SECONDS,
+    },
     upstreams,
     securityTxt: {
       contact: e.SECURITY_TXT_CONTACT,

@@ -31,14 +31,23 @@ function claims(over: Record<string, unknown> = {}): Record<string, unknown> {
   };
 }
 
-async function post(token: string | undefined): Promise<{ statusCode: number }> {
-  return new Browser(bff.app, idp.issuer).request("POST", "/bff/backchannel-logout", {
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: token === undefined ? "" : `logout_token=${encodeURIComponent(token)}`,
-  });
+async function post(
+  token: string | undefined,
+): Promise<{ statusCode: number }> {
+  return new Browser(bff.app, idp.issuer).request(
+    "POST",
+    "/bff/backchannel-logout",
+    {
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body:
+        token === undefined ? "" : `logout_token=${encodeURIComponent(token)}`,
+    },
+  );
 }
 
-async function session(account: string): Promise<{ browser: Browser; id: string; sid: string | null }> {
+async function session(
+  account: string,
+): Promise<{ browser: Browser; id: string; sid: string | null }> {
   const browser = new Browser(bff.app, idp.issuer);
   await browser.login(undefined, account);
   const id = browser.bffJar.get("__Host-Http-session") as string;
@@ -63,7 +72,11 @@ describe("back-channel logout", () => {
     expect(await bff.store.get(alice1.id)).toBeUndefined();
     expect(await bff.store.get(alice2.id)).toBeDefined();
     expect(await bff.store.get(bob.id)).toBeDefined();
-    expect(bff.logs.some((l) => l["event"] === "backchannel_logout" && l["sessions"] === 1)).toBe(true);
+    expect(
+      bff.logs.some(
+        (l) => l["event"] === "backchannel_logout" && l["sessions"] === 1,
+      ),
+    ).toBe(true);
   });
 
   it("ends every session of the subject when only sub is given", async () => {
@@ -101,8 +114,16 @@ describe("back-channel logout", () => {
       await idp.sign(claims({ ...base, events: undefined })),
       await idp.sign(claims({ ...base, events: null })),
       await idp.sign(claims({ ...base, events: { other: {} } })),
-      await idp.sign(claims({ ...base, exp: Math.floor(Date.now() / 1000) - 600, iat: Math.floor(Date.now() / 1000) - 700 })),
-      await idp.sign(claims({ ...base, iat: Math.floor(Date.now() / 1000) - 3600 })),
+      await idp.sign(
+        claims({
+          ...base,
+          exp: Math.floor(Date.now() / 1000) - 600,
+          iat: Math.floor(Date.now() / 1000) - 700,
+        }),
+      ),
+      await idp.sign(
+        claims({ ...base, iat: Math.floor(Date.now() / 1000) - 3600 }),
+      ),
       await idp.sign(claims({ ...base, jti: undefined })),
       await idp.sign(claims({ ...base, exp: undefined })),
       await idp.sign(claims({ events: { [EVENT]: {} } })),
@@ -112,6 +133,9 @@ describe("back-channel logout", () => {
     }
     expect(await bff.store.get(alice1.id)).toBeDefined();
     expect(await bff.store.get(alice2.id)).toBeDefined();
-    expect(bff.logs.filter((l) => l["event"] === "backchannel_logout_rejected").length).toBeGreaterThanOrEqual(bad.length);
+    expect(
+      bff.logs.filter((l) => l["event"] === "backchannel_logout_rejected")
+        .length,
+    ).toBeGreaterThanOrEqual(bad.length);
   });
 });

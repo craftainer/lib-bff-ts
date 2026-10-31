@@ -1,6 +1,12 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { exportJWK, generateKeyPair, SignJWT, type CryptoKey, type JWK } from "jose";
+import {
+  exportJWK,
+  generateKeyPair,
+  SignJWT,
+  type CryptoKey,
+  type JWK,
+} from "jose";
 import Provider from "oidc-provider";
 
 /** The origin the BFF pretends to be served from in tests (nothing listens there). */
@@ -14,7 +20,10 @@ export interface TestIdp {
   issuer: string;
   provider: Provider;
   /** Signs a logout token (or any JWT) with the IdP's real key unless another key is given. */
-  sign(payload: Record<string, unknown>, opts?: { key?: CryptoKey; kid?: string; typ?: string | null }): Promise<string>;
+  sign(
+    payload: Record<string, unknown>,
+    opts?: { key?: CryptoKey; kid?: string; typ?: string | null },
+  ): Promise<string>;
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
   close(): Promise<void>;
@@ -33,7 +42,12 @@ export async function startIdp(): Promise<TestIdp> {
   const port = await freePort();
   const issuer = `http://localhost:${port}`;
   const { privateKey } = await generateKeyPair("RS256", { extractable: true });
-  const jwk: JWK = { ...(await exportJWK(privateKey)), kid: "test-key", alg: "RS256", use: "sig" };
+  const jwk: JWK = {
+    ...(await exportJWK(privateKey)),
+    kid: "test-key",
+    alg: "RS256",
+    use: "sig",
+  };
   const other = await generateKeyPair("RS256");
 
   const provider = new Provider(issuer, {

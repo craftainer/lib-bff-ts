@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMemorySessionStore } from "../src/session.ts";
 import { Browser, makeBff, testConfig, type TestBff } from "./helpers/bff.ts";
-import { CLIENT_ID, PUBLIC_ORIGIN, SCOPES, startIdp, type TestIdp } from "./helpers/idp.ts";
+import {
+  CLIENT_ID,
+  PUBLIC_ORIGIN,
+  SCOPES,
+  startIdp,
+  type TestIdp,
+} from "./helpers/idp.ts";
 
 let idp: TestIdp;
 let bff: TestBff;
@@ -31,7 +37,9 @@ beforeAll(async () => {
   bff.app.get("/bff/test-boom", async () => {
     throw new Error("secret internal detail");
   });
-  bff.app.get("/plain", async (request) => ({ session: request.bffSession === null ? "none" : "some" }));
+  bff.app.get("/plain", async (request) => ({
+    session: request.bffSession === null ? "none" : "some",
+  }));
 });
 
 afterAll(async () => {
@@ -112,7 +120,9 @@ describe("login", () => {
   it("omits email for users without one", async () => {
     const b = new Browser(bff.app, idp.issuer);
     await b.login(undefined, "noemail");
-    const body = (await b.request("GET", "/bff/user")).json<Record<string, unknown>>();
+    const body = (await b.request("GET", "/bff/user")).json<
+      Record<string, unknown>
+    >();
     expect(body).not.toHaveProperty("email");
     expect(body["name"]).toBe("User noemail");
   });
@@ -129,12 +139,20 @@ describe("login", () => {
   it("ignores the session cookie outside /bff and /api", async () => {
     const b = new Browser(bff.app, idp.issuer);
     await b.login();
-    expect((await b.request("GET", "/plain")).json()).toEqual({ session: "none" });
+    expect((await b.request("GET", "/plain")).json()).toEqual({
+      session: "none",
+    });
     expect((await b.request("GET", "/bff/user")).statusCode).toBe(200);
   });
 
   it("falls back to / for every non same-origin returnTo", async () => {
-    for (const returnTo of ["//evil.example/x", "https://evil.example/", "/\\evil.example", "/a\r\nSet-Cookie: x=1", "javascript:alert(1)"]) {
+    for (const returnTo of [
+      "//evil.example/x",
+      "https://evil.example/",
+      "/\\evil.example",
+      "/a\r\nSet-Cookie: x=1",
+      "javascript:alert(1)",
+    ]) {
       const b = new Browser(bff.app, idp.issuer);
       const cb = await b.login(returnTo);
       expect(cb.headers["location"]).toBe("/");
@@ -181,7 +199,10 @@ describe("login", () => {
     expect(replay.statusCode).toBe(400);
 
     b.bffJar.set("__Host-Http-login", "never-issued");
-    const unknown = await b.request("GET", `/bff/callback?state=never-issued&code=x`);
+    const unknown = await b.request(
+      "GET",
+      `/bff/callback?state=never-issued&code=x`,
+    );
     expect(unknown.statusCode).toBe(400);
   });
 
@@ -206,7 +227,11 @@ describe("login", () => {
     const url = new URL(callbackUrl);
     const state = url.searchParams.get("state") as string;
     const tx = await bff.store.takeTransaction(state);
-    await bff.store.putTransaction(state, { ...(tx as NonNullable<typeof tx>), nonce: "someone-elses-nonce" }, 60);
+    await bff.store.putTransaction(
+      state,
+      { ...(tx as NonNullable<typeof tx>), nonce: "someone-elses-nonce" },
+      60,
+    );
     const res = await b.request("GET", `${url.pathname}${url.search}`);
     expect(res.statusCode).toBe(400);
   });
@@ -217,7 +242,11 @@ describe("login", () => {
     const url = new URL(callbackUrl);
     const state = url.searchParams.get("state") as string;
     const tx = await bff.store.takeTransaction(state);
-    await bff.store.putTransaction(state, { ...(tx as NonNullable<typeof tx>), codeVerifier: "x".repeat(43) }, 60);
+    await bff.store.putTransaction(
+      state,
+      { ...(tx as NonNullable<typeof tx>), codeVerifier: "x".repeat(43) },
+      60,
+    );
     const res = await b.request("GET", `${url.pathname}${url.search}`);
     expect(res.statusCode).toBe(400);
   });
@@ -247,7 +276,9 @@ describe("logout", () => {
     const url = new URL(res.json<{ logoutUrl: string }>().logoutUrl);
     expect(url.origin + url.pathname).toBe(`${idp.issuer}/session/end`);
     expect(url.searchParams.get("id_token_hint")).toBe(idToken);
-    expect(url.searchParams.get("post_logout_redirect_uri")).toBe(`${PUBLIC_ORIGIN}/`);
+    expect(url.searchParams.get("post_logout_redirect_uri")).toBe(
+      `${PUBLIC_ORIGIN}/`,
+    );
     expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
     expect(cookieOf(res, "__Host-Http-session")).toContain("Max-Age=0");
     expect(await bff.store.get(id)).toBeUndefined();
@@ -256,7 +287,9 @@ describe("logout", () => {
 
   it("answers 401 without a session", async () => {
     const b = new Browser(bff.app, idp.issuer);
-    expect((await b.request("POST", "/bff/logout", { csrf: true })).statusCode).toBe(401);
+    expect(
+      (await b.request("POST", "/bff/logout", { csrf: true })).statusCode,
+    ).toBe(401);
   });
 
   it("still logs out when the IdP cannot be reached", async () => {
@@ -279,7 +312,9 @@ describe("logout", () => {
       600,
     );
     down.browser.bffJar.set("__Host-Http-session", "sess-1");
-    const res = await down.browser.request("POST", "/bff/logout", { csrf: true });
+    const res = await down.browser.request("POST", "/bff/logout", {
+      csrf: true,
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ logoutUrl: `${PUBLIC_ORIGIN}/` });
     expect(await down.store.get("sess-1")).toBeUndefined();
@@ -290,7 +325,9 @@ describe("logout", () => {
 describe("IdP availability", () => {
   it("answers 503 on login when discovery fails, and retries on the next request", async () => {
     const down = await makeBff({ issuer: "http://localhost:1" });
-    expect((await down.browser.request("GET", "/bff/login")).statusCode).toBe(503);
+    expect((await down.browser.request("GET", "/bff/login")).statusCode).toBe(
+      503,
+    );
     const again = await down.browser.request("GET", "/bff/login");
     expect(again.json()).toEqual({ error: "idp_unavailable" });
     await down.app.close();
@@ -298,8 +335,12 @@ describe("IdP availability", () => {
 
   it("refuses plain-http IdP URLs unless explicitly allowed", async () => {
     const base = testConfig(idp);
-    const strict = await makeBff(idp, { config: { ...base, oidc: { ...base.oidc, allowInsecure: false } } });
-    expect((await strict.browser.request("GET", "/bff/login")).statusCode).toBe(503);
+    const strict = await makeBff(idp, {
+      config: { ...base, oidc: { ...base.oidc, allowInsecure: false } },
+    });
+    expect((await strict.browser.request("GET", "/bff/login")).statusCode).toBe(
+      503,
+    );
     await strict.app.close();
   });
 
@@ -310,7 +351,9 @@ describe("IdP availability", () => {
         OIDC_DISCOVERY_URL: `${idp.issuer}/.well-known/openid-configuration`,
       },
     });
-    expect((await mismatch.browser.request("GET", "/bff/login")).statusCode).toBe(503);
+    expect(
+      (await mismatch.browser.request("GET", "/bff/login")).statusCode,
+    ).toBe(503);
     await mismatch.app.close();
   });
 });
@@ -320,13 +363,17 @@ describe("rate limiting", () => {
     const limited = await makeBff(idp, { env: { RATE_LIMIT_MAX: "2" } });
     const codes: number[] = [];
     for (let i = 0; i < 3; i += 1) {
-      codes.push((await limited.browser.request("GET", "/bff/login")).statusCode);
+      codes.push(
+        (await limited.browser.request("GET", "/bff/login")).statusCode,
+      );
     }
     expect(codes).toEqual([302, 302, 429]);
     expect(limited.logs.some((l) => l["event"] === "rate_limited")).toBe(true);
     const callbacks: number[] = [];
     for (let i = 0; i < 3; i += 1) {
-      callbacks.push((await limited.browser.request("GET", "/bff/callback")).statusCode);
+      callbacks.push(
+        (await limited.browser.request("GET", "/bff/callback")).statusCode,
+      );
     }
     expect(callbacks).toEqual([400, 400, 429]);
     await limited.app.close();
@@ -335,7 +382,10 @@ describe("rate limiting", () => {
 
 describe("config endpoint", () => {
   it("serves public runtime config only", async () => {
-    const res = await new Browser(bff.app, idp.issuer).request("GET", "/bff/config");
+    const res = await new Browser(bff.app, idp.issuer).request(
+      "GET",
+      "/bff/config",
+    );
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       analytics: { enabled: true, consent: "implied", respectGpc: true },
@@ -350,14 +400,23 @@ describe("session lifetime", () => {
   it("expires an idle session and slides the idle timeout on use", async () => {
     let now = Date.now();
     const store = createMemorySessionStore({ now: () => now });
-    const timed = await makeBff(idp, { store, env: { SESSION_IDLE_SECONDS: "1800" } });
+    const timed = await makeBff(idp, {
+      store,
+      env: { SESSION_IDLE_SECONDS: "1800" },
+    });
     await timed.browser.login();
     now += 1000 * 1000;
-    expect((await timed.browser.request("GET", "/bff/user")).statusCode).toBe(200);
+    expect((await timed.browser.request("GET", "/bff/user")).statusCode).toBe(
+      200,
+    );
     now += 1000 * 1000;
-    expect((await timed.browser.request("GET", "/bff/user")).statusCode).toBe(200);
+    expect((await timed.browser.request("GET", "/bff/user")).statusCode).toBe(
+      200,
+    );
     now += 1801 * 1000;
-    expect((await timed.browser.request("GET", "/bff/user")).statusCode).toBe(401);
+    expect((await timed.browser.request("GET", "/bff/user")).statusCode).toBe(
+      401,
+    );
     await timed.app.close();
   });
 
@@ -365,8 +424,14 @@ describe("session lifetime", () => {
     const b = new Browser(bff.app, idp.issuer);
     await b.login();
     const id = sessionId(b);
-    const data = (await bff.store.get(id)) as NonNullable<Awaited<ReturnType<typeof bff.store.get>>>;
-    await bff.store.put(id, { ...data, absoluteExpiresAt: Math.floor(Date.now() / 1000) - 1 }, 600);
+    const data = (await bff.store.get(id)) as NonNullable<
+      Awaited<ReturnType<typeof bff.store.get>>
+    >;
+    await bff.store.put(
+      id,
+      { ...data, absoluteExpiresAt: Math.floor(Date.now() / 1000) - 1 },
+      600,
+    );
     expect((await b.request("GET", "/bff/user")).statusCode).toBe(401);
     expect(await bff.store.get(id)).toBeUndefined();
   });
@@ -376,23 +441,32 @@ describe("session lifetime", () => {
     const b = new Browser(bff.app, idp.issuer);
     await b.login();
     const data = await bff.store.get(sessionId(b));
-    expect((data?.absoluteExpiresAt ?? 0) - (data?.createdAt ?? 0)).toBe(bff.config.session.absoluteSeconds);
+    expect((data?.absoluteExpiresAt ?? 0) - (data?.createdAt ?? 0)).toBe(
+      bff.config.session.absoluteSeconds,
+    );
   });
 });
 
 describe("error handling", () => {
   it("hides internal error details", async () => {
-    const res = await new Browser(bff.app, idp.issuer).request("GET", "/bff/test-boom");
+    const res = await new Browser(bff.app, idp.issuer).request(
+      "GET",
+      "/bff/test-boom",
+    );
     expect(res.statusCode).toBe(500);
     expect(res.json()).toEqual({ error: "internal_error" });
     expect(res.body).not.toContain("secret internal detail");
   });
 
   it("reports client errors by code", async () => {
-    const res = await new Browser(bff.app, idp.issuer).request("POST", "/bff/backchannel-logout", {
-      headers: { "content-type": "application/xml" },
-      body: "logout_token=x",
-    });
+    const res = await new Browser(bff.app, idp.issuer).request(
+      "POST",
+      "/bff/backchannel-logout",
+      {
+        headers: { "content-type": "application/xml" },
+        body: "logout_token=x",
+      },
+    );
     expect(res.statusCode).toBe(415);
     expect(res.json()).toEqual({ error: "FST_ERR_CTP_INVALID_MEDIA_TYPE" });
   });

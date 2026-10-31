@@ -21,4 +21,10 @@ export {
   type SessionData,
   type SessionStore,
 } from "./session.ts";
-export type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest, FastifyServerOptions } from "fastify";
+export type {
+  FastifyInstance,
+  FastifyPluginAsync,
+  FastifyReply,
+  FastifyRequest,
+  FastifyServerOptions,
+} from "fastify";

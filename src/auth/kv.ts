@@ -8,7 +8,11 @@ import { Valkey } from "iovalkey";
 export interface KvClient {
   get(key: string): Promise<string | null>;
   /** Returns false only when `nx` is set and the key already exists. */
-  set(key: string, value: string, opts: { ttlMs: number; nx?: boolean }): Promise<boolean>;
+  set(
+    key: string,
+    value: string,
+    opts: { ttlMs: number; nx?: boolean },
+  ): Promise<boolean>;
   /** Atomically reads and deletes a key. */
   getDel(key: string): Promise<string | null>;
   /** Returns the number of keys that existed. */
@@ -52,11 +56,19 @@ export class MemoryKv implements KvClient {
     return Promise.resolve(this.#live(key)?.value ?? null);
   }
 
-  set(key: string, value: string, opts: { ttlMs: number; nx?: boolean }): Promise<boolean> {
+  set(
+    key: string,
+    value: string,
+    opts: { ttlMs: number; nx?: boolean },
+  ): Promise<boolean> {
     if (opts.nx === true && this.#live(key) !== undefined) {
       return Promise.resolve(false);
     }
-    this.#entries.set(key, { value, members: undefined, expiresAt: this.#now() + opts.ttlMs });
+    this.#entries.set(key, {
+      value,
+      members: undefined,
+      expiresAt: this.#now() + opts.ttlMs,
+    });
     return Promise.resolve(true);
   }
 
@@ -89,7 +101,11 @@ export class MemoryKv implements KvClient {
   sadd(key: string, member: string): Promise<void> {
     const existing = this.#live(key);
     if (existing?.members === undefined) {
-      this.#entries.set(key, { value: undefined, members: new Set([member]), expiresAt: undefined });
+      this.#entries.set(key, {
+        value: undefined,
+        members: new Set([member]),
+        expiresAt: undefined,
+      });
     } else {
       existing.members.add(member);
     }
@@ -137,7 +153,11 @@ export class ValkeyKv implements KvClient {
     return this.#client.get(key);
   }
 
-  async set(key: string, value: string, opts: { ttlMs: number; nx?: boolean }): Promise<boolean> {
+  async set(
+    key: string,
+    value: string,
+    opts: { ttlMs: number; nx?: boolean },
+  ): Promise<boolean> {
     const reply =
       opts.nx === true
         ? await this.#client.set(key, value, "PX", opts.ttlMs, "NX")

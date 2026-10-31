@@ -30,7 +30,8 @@ describe("loadConfig", () => {
       trustProxy: false,
       oidc: {
         issuer: "https://idp.example.com/realms/x",
-        discoveryUrl: "https://idp.example.com/realms/x/.well-known/openid-configuration",
+        discoveryUrl:
+          "https://idp.example.com/realms/x/.well-known/openid-configuration",
         clientId: "bff",
         scopes: "openid profile email",
         allowInsecure: false,
@@ -44,7 +45,13 @@ describe("loadConfig", () => {
       rateLimit: { max: 20, windowSeconds: 60 },
       upstreams: {},
       changePasswordUrl: null,
-      securityTxt: { contact: [], expires: null, policy: null, preferredLanguages: null, canonical: null },
+      securityTxt: {
+        contact: [],
+        expires: null,
+        policy: null,
+        preferredLanguages: null,
+        canonical: null,
+      },
       analytics: {
         enabled: true,
         backend: "none",
@@ -67,7 +74,8 @@ describe("loadConfig", () => {
       BFF_HOST: "127.0.0.1",
       BFF_STATIC_DIR: "/srv/spa",
       BFF_TRUST_PROXY: "true",
-      OIDC_DISCOVERY_URL: "https://idp-internal:8443/realms/x/.well-known/openid-configuration",
+      OIDC_DISCOVERY_URL:
+        "https://idp-internal:8443/realms/x/.well-known/openid-configuration",
       OIDC_CLIENT_ID: "my-bff",
       OIDC_SCOPES: "openid   offline_access",
       SESSION_IDLE_SECONDS: "60",
@@ -76,13 +84,20 @@ describe("loadConfig", () => {
       RATE_LIMIT_MAX: "5",
       RATE_LIMIT_WINDOW_SECONDS: "10",
       BFF_UPSTREAMS: JSON.stringify({
-        crud: { url: "http://backend:8000", audience: "api", methods: ["GET", "POST"], stream: true },
+        crud: {
+          url: "http://backend:8000",
+          audience: "api",
+          methods: ["GET", "POST"],
+          stream: true,
+        },
       }),
-      SECURITY_TXT_CONTACT: "https://example.com/report, mailto:sec@example.com",
+      SECURITY_TXT_CONTACT:
+        "https://example.com/report, mailto:sec@example.com",
       SECURITY_TXT_EXPIRES: "2027-01-01T00:00:00Z",
       SECURITY_TXT_POLICY: "https://example.com/policy",
       SECURITY_TXT_PREFERRED_LANGUAGES: "en",
-      SECURITY_TXT_CANONICAL: "https://app.example.com/.well-known/security.txt",
+      SECURITY_TXT_CANONICAL:
+        "https://app.example.com/.well-known/security.txt",
       CHANGE_PASSWORD_URL: "https://idp.example.com/account",
       ANALYTICS_ENABLED: "0",
       ANALYTICS_BACKEND: "umami",
@@ -106,8 +121,16 @@ describe("loadConfig", () => {
       tokenExchange: false,
       stream: true,
     });
-    expect(config.securityTxt.contact).toEqual(["https://example.com/report", "mailto:sec@example.com"]);
-    expect(config.analytics).toMatchObject({ enabled: false, consent: "opt-in", propKeys: ["a", "b"], respectGpc: false });
+    expect(config.securityTxt.contact).toEqual([
+      "https://example.com/report",
+      "mailto:sec@example.com",
+    ]);
+    expect(config.analytics).toMatchObject({
+      enabled: false,
+      consent: "opt-in",
+      propKeys: ["a", "b"],
+      respectGpc: false,
+    });
   });
 
   it("allows plain http for a loopback origin and with OIDC_ALLOW_INSECURE", () => {
@@ -119,7 +142,9 @@ describe("loadConfig", () => {
       CHANGE_PASSWORD_URL: "http://localhost:8080/account",
     });
     expect(config.publicOrigin).toBe("http://localhost:8081");
-    expect(config.oidc.discoveryUrl).toBe("http://localhost:8080/realms/x/.well-known/openid-configuration");
+    expect(config.oidc.discoveryUrl).toBe(
+      "http://localhost:8080/realms/x/.well-known/openid-configuration",
+    );
   });
 
   it("lists missing required variables", () => {
@@ -149,90 +174,186 @@ describe("loadConfig", () => {
   });
 
   it("refuses insecure IdP URLs unless allowed, and never in production", () => {
-    expect(issues({ ...base, OIDC_ISSUER: "http://idp.example.com" })).toContain(
+    expect(
+      issues({ ...base, OIDC_ISSUER: "http://idp.example.com" }),
+    ).toContain(
       "OIDC_ISSUER: must be https (set OIDC_ALLOW_INSECURE=true for development)",
     );
     expect(
-      issues({ ...base, OIDC_DISCOVERY_URL: "http://idp.example.com/.well-known/openid-configuration" }),
-    ).toContain("OIDC_DISCOVERY_URL: must be https (set OIDC_ALLOW_INSECURE=true for development)");
-    expect(issues({ ...base, NODE_ENV: "production", OIDC_ALLOW_INSECURE: "true" })).toContain(
-      "OIDC_ALLOW_INSECURE: refused when NODE_ENV=production",
+      issues({
+        ...base,
+        OIDC_DISCOVERY_URL:
+          "http://idp.example.com/.well-known/openid-configuration",
+      }),
+    ).toContain(
+      "OIDC_DISCOVERY_URL: must be https (set OIDC_ALLOW_INSECURE=true for development)",
     );
+    expect(
+      issues({ ...base, NODE_ENV: "production", OIDC_ALLOW_INSECURE: "true" }),
+    ).toContain("OIDC_ALLOW_INSECURE: refused when NODE_ENV=production");
   });
 
   it("requires the full discovery URL", () => {
-    expect(issues({ ...base, OIDC_DISCOVERY_URL: "https://idp.example.com/realms/x" })).toContain(
+    expect(
+      issues({
+        ...base,
+        OIDC_DISCOVERY_URL: "https://idp.example.com/realms/x",
+      }),
+    ).toContain(
       "OIDC_DISCOVERY_URL: must be the full .../.well-known/openid-configuration URL",
     );
     expect(
-      issues({ ...base, OIDC_DISCOVERY_URL: "https://idp.example.com/.well-known/openid-configuration?x=1" }),
-    ).toContain("OIDC_DISCOVERY_URL: must be the full .../.well-known/openid-configuration URL");
-    expect(issues({ ...base, OIDC_DISCOVERY_URL: "not a url" })).toContain("OIDC_DISCOVERY_URL: not a valid URL");
+      issues({
+        ...base,
+        OIDC_DISCOVERY_URL:
+          "https://idp.example.com/.well-known/openid-configuration?x=1",
+      }),
+    ).toContain(
+      "OIDC_DISCOVERY_URL: must be the full .../.well-known/openid-configuration URL",
+    );
+    expect(issues({ ...base, OIDC_DISCOVERY_URL: "not a url" })).toContain(
+      "OIDC_DISCOVERY_URL: not a valid URL",
+    );
   });
 
   it("requires openid among the scopes", () => {
-    expect(issues({ ...base, OIDC_SCOPES: "profile" })).toContain("OIDC_SCOPES: must include openid");
+    expect(issues({ ...base, OIDC_SCOPES: "profile" })).toContain(
+      "OIDC_SCOPES: must include openid",
+    );
   });
 
   it("validates PUBLIC_ORIGIN", () => {
-    expect(issues({ ...base, PUBLIC_ORIGIN: "nonsense" })).toContain("PUBLIC_ORIGIN: not a valid URL");
-    expect(issues({ ...base, PUBLIC_ORIGIN: "https://app.example.com/path" })[0]).toContain("must be an origin");
-    expect(issues({ ...base, PUBLIC_ORIGIN: "http://app.example.com" })[0]).toContain("must be https");
-    expect(issues({ ...base, PUBLIC_ORIGIN: "http://localhost:3000", NODE_ENV: "production" })[0]).toContain(
-      "must be https",
+    expect(issues({ ...base, PUBLIC_ORIGIN: "nonsense" })).toContain(
+      "PUBLIC_ORIGIN: not a valid URL",
     );
+    expect(
+      issues({ ...base, PUBLIC_ORIGIN: "https://app.example.com/path" })[0],
+    ).toContain("must be an origin");
+    expect(
+      issues({ ...base, PUBLIC_ORIGIN: "http://app.example.com" })[0],
+    ).toContain("must be https");
+    expect(
+      issues({
+        ...base,
+        PUBLIC_ORIGIN: "http://localhost:3000",
+        NODE_ENV: "production",
+      })[0],
+    ).toContain("must be https");
   });
 
   it("validates session lifetimes and cookie names", () => {
-    expect(issues({ ...base, SESSION_IDLE_SECONDS: "100", SESSION_ABSOLUTE_SECONDS: "50" })).toContain(
+    expect(
+      issues({
+        ...base,
+        SESSION_IDLE_SECONDS: "100",
+        SESSION_ABSOLUTE_SECONDS: "50",
+      }),
+    ).toContain(
       "SESSION_IDLE_SECONDS: must not exceed SESSION_ABSOLUTE_SECONDS",
     );
-    expect(issues({ ...base, SESSION_COOKIE_NAME: "__Host-Http-login" })[0]).toContain("must differ");
+    expect(
+      issues({ ...base, SESSION_COOKIE_NAME: "__Host-Http-login" })[0],
+    ).toContain("must differ");
   });
 
   it("validates BFF_UPSTREAMS", () => {
-    expect(issues({ ...base, BFF_UPSTREAMS: "{" })).toContain("BFF_UPSTREAMS: not valid JSON");
-    expect(issues({ ...base, BFF_UPSTREAMS: JSON.stringify({ Bad_Name: { url: "http://x", audience: "a", methods: ["GET"] } }) })[0]).toContain(
-      "BFF_UPSTREAMS.",
+    expect(issues({ ...base, BFF_UPSTREAMS: "{" })).toContain(
+      "BFF_UPSTREAMS: not valid JSON",
     );
-    expect(issues({ ...base, BFF_UPSTREAMS: JSON.stringify({ a: { url: "ftp://x", audience: "a", methods: ["GET"] } }) })[0]).toContain(
-      "BFF_UPSTREAMS.a.url",
-    );
-    expect(issues({ ...base, BFF_UPSTREAMS: JSON.stringify({ a: { url: "http://u:p@x/?q=1", audience: "a", methods: ["GET"] } }) })).toContain(
+    expect(
+      issues({
+        ...base,
+        BFF_UPSTREAMS: JSON.stringify({
+          Bad_Name: { url: "http://x", audience: "a", methods: ["GET"] },
+        }),
+      })[0],
+    ).toContain("BFF_UPSTREAMS.");
+    expect(
+      issues({
+        ...base,
+        BFF_UPSTREAMS: JSON.stringify({
+          a: { url: "ftp://x", audience: "a", methods: ["GET"] },
+        }),
+      })[0],
+    ).toContain("BFF_UPSTREAMS.a.url");
+    expect(
+      issues({
+        ...base,
+        BFF_UPSTREAMS: JSON.stringify({
+          a: { url: "http://u:p@x/?q=1", audience: "a", methods: ["GET"] },
+        }),
+      }),
+    ).toContain(
       "BFF_UPSTREAMS.a.url: must not contain credentials, query or fragment",
     );
-    expect(issues({ ...base, BFF_UPSTREAMS: JSON.stringify({ a: { url: "http://x", audience: "a", methods: [] } }) })[0]).toContain(
-      "BFF_UPSTREAMS.a.methods",
-    );
+    expect(
+      issues({
+        ...base,
+        BFF_UPSTREAMS: JSON.stringify({
+          a: { url: "http://x", audience: "a", methods: [] },
+        }),
+      })[0],
+    ).toContain("BFF_UPSTREAMS.a.methods");
   });
 
   it("validates analytics settings", () => {
     const found = issues({ ...base, ANALYTICS_BACKEND: "umami" });
-    expect(found).toContain("ANALYTICS_ENDPOINT: required (a URL) for the umami backend");
-    expect(found).toContain("ANALYTICS_SITE_ID: required for the umami backend");
-    expect(issues({ ...base, ANALYTICS_BACKEND: "umami", ANALYTICS_ENDPOINT: "nope", ANALYTICS_SITE_ID: "x" })).toContain(
+    expect(found).toContain(
       "ANALYTICS_ENDPOINT: required (a URL) for the umami backend",
     );
-    expect(() => loadConfig({ ...base, ANALYTICS_BACKEND: "umami", ANALYTICS_ENABLED: "false" })).not.toThrow();
+    expect(found).toContain(
+      "ANALYTICS_SITE_ID: required for the umami backend",
+    );
+    expect(
+      issues({
+        ...base,
+        ANALYTICS_BACKEND: "umami",
+        ANALYTICS_ENDPOINT: "nope",
+        ANALYTICS_SITE_ID: "x",
+      }),
+    ).toContain("ANALYTICS_ENDPOINT: required (a URL) for the umami backend");
+    expect(() =>
+      loadConfig({
+        ...base,
+        ANALYTICS_BACKEND: "umami",
+        ANALYTICS_ENABLED: "false",
+      }),
+    ).not.toThrow();
   });
 
   it("accepts a complete umami configuration", () => {
     expect(
-      loadConfig({ ...base, ANALYTICS_BACKEND: "umami", ANALYTICS_ENDPOINT: "http://umami:3000", ANALYTICS_SITE_ID: "x" })
-        .analytics.backend,
+      loadConfig({
+        ...base,
+        ANALYTICS_BACKEND: "umami",
+        ANALYTICS_ENDPOINT: "http://umami:3000",
+        ANALYTICS_SITE_ID: "x",
+      }).analytics.backend,
     ).toBe("umami");
   });
 
   it("validates security.txt and the change-password URL", () => {
-    expect(issues({ ...base, SECURITY_TXT_CONTACT: "http://insecure", SECURITY_TXT_EXPIRES: "tomorrow" })).toEqual([
+    expect(
+      issues({
+        ...base,
+        SECURITY_TXT_CONTACT: "http://insecure",
+        SECURITY_TXT_EXPIRES: "tomorrow",
+      }),
+    ).toEqual([
       "SECURITY_TXT_CONTACT: each entry must be an https:, mailto: or tel: URI",
       "SECURITY_TXT_EXPIRES: must be an ISO 8601 date-time",
     ]);
-    expect(issues({ ...base, NODE_ENV: "production", SECURITY_TXT_CONTACT: "mailto:a@b.c" })).toContain(
+    expect(
+      issues({
+        ...base,
+        NODE_ENV: "production",
+        SECURITY_TXT_CONTACT: "mailto:a@b.c",
+      }),
+    ).toContain(
       "SECURITY_TXT_EXPIRES: required in production when SECURITY_TXT_CONTACT is set (RFC 9116)",
     );
-    expect(issues({ ...base, CHANGE_PASSWORD_URL: "http://idp/account" })).toContain(
-      "CHANGE_PASSWORD_URL: must be an https URL",
-    );
+    expect(
+      issues({ ...base, CHANGE_PASSWORD_URL: "http://idp/account" }),
+    ).toContain("CHANGE_PASSWORD_URL: must be an https URL");
   });
 });

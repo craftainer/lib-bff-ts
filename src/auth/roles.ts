@@ -4,7 +4,9 @@ import { z } from "zod";
 const rolesSchema = z
   .object({
     realm_access: z.object({ roles: z.array(z.string()) }).optional(),
-    resource_access: z.record(z.string(), z.object({ roles: z.array(z.string()) })).optional(),
+    resource_access: z
+      .record(z.string(), z.object({ roles: z.array(z.string()) }))
+      .optional(),
   })
   .catch({});
 
@@ -14,7 +16,9 @@ function fromClaims(claims: Record<string, unknown>): Record<string, string[]> {
   if (parsed.realm_access !== undefined) {
     roles["realm"] = parsed.realm_access.roles;
   }
-  for (const [clientId, access] of Object.entries(parsed.resource_access ?? {})) {
+  for (const [clientId, access] of Object.entries(
+    parsed.resource_access ?? {},
+  )) {
     roles[clientId] = access.roles;
   }
   return roles;
@@ -35,9 +39,15 @@ function claimsOf(token: string): Record<string, unknown> {
  * endpoint. Roles are a UI hint; authorization stays in the upstreams.
  * An opaque access token or malformed claims yield no roles from that source.
  */
-export function extractRoles(idTokenClaims: Record<string, unknown>, accessToken: string): Record<string, string[]> {
+export function extractRoles(
+  idTokenClaims: Record<string, unknown>,
+  accessToken: string,
+): Record<string, string[]> {
   const merged: Record<string, string[]> = {};
-  for (const source of [fromClaims(claimsOf(accessToken)), fromClaims(idTokenClaims)]) {
+  for (const source of [
+    fromClaims(claimsOf(accessToken)),
+    fromClaims(idTokenClaims),
+  ]) {
     for (const [key, roles] of Object.entries(source)) {
       merged[key] = [...new Set([...(merged[key] ?? []), ...roles])];
     }

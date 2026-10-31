@@ -21,7 +21,12 @@ import { randomId } from "./store.ts";
 
 const logoutBodySchema = z.object({ logout_token: z.string().min(1) });
 
-function loginCookie(): { path: string; httpOnly: true; secure: true; sameSite: "lax" } {
+function loginCookie(): {
+  path: string;
+  httpOnly: true;
+  secure: true;
+  sameSite: "lax";
+} {
   return { path: "/", httpOnly: true, secure: true, sameSite: "lax" };
 }
 
@@ -32,12 +37,18 @@ function loginCookie(): { path: string; httpOnly: true; secure: true; sameSite: 
  */
 const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
   const redirectUri = `${config.publicOrigin}/bff/callback`;
-  const limit = { max: config.rateLimit.max, timeWindow: config.rateLimit.windowSeconds * 1000 };
+  const limit = {
+    max: config.rateLimit.max,
+    timeWindow: config.rateLimit.windowSeconds * 1000,
+  };
 
   await app.register(rateLimit, {
     global: false,
     onExceeded: (request: FastifyRequest) => {
-      securityLog(request.log, "rate_limited", { path: pathOf(request.url), ip: request.ip });
+      securityLog(request.log, "rate_limited", {
+        path: pathOf(request.url),
+        ip: request.ip,
+      });
     },
   });
 
@@ -47,102 +58,129 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
     }
   });
 
-  function unavailable(request: FastifyRequest, reply: FastifyReply, error: unknown): FastifyReply {
+  function unavailable(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    error: unknown,
+  ): FastifyReply {
     request.log.error({ err: error }, "IdP unavailable");
     return reply.code(503).send({ error: "idp_unavailable" });
   }
 
-  app.get("/bff/login", { config: { rateLimit: limit } }, async (request, reply) => {
-    let configuration: client.Configuration;
-    try {
-      configuration = await app.bffOidc.configuration();
-    } catch (error) {
-      return unavailable(request, reply, error);
-    }
-    const query = request.query as Record<string, unknown>;
-    const state = client.randomState();
-    const nonce = client.randomNonce();
-    const codeVerifier = client.randomPKCECodeVerifier();
-    await app.bffStore.putTransaction(
-      state,
-      { nonce, codeVerifier, returnTo: safeReturnTo(query["returnTo"], config.publicOrigin) },
-      config.session.loginTtlSeconds,
-    );
-    const url = client.buildAuthorizationUrl(configuration, {
-      redirect_uri: redirectUri,
-      scope: config.oidc.scopes,
-      state,
-      nonce,
-      code_challenge: await client.calculatePKCECodeChallenge(codeVerifier),
-      code_challenge_method: "S256",
-    });
-    void reply.setCookie(LOGIN_COOKIE_NAME, state, { ...loginCookie(), maxAge: config.session.loginTtlSeconds });
-    securityLog(request.log, "login_started", { ip: request.ip });
-    return reply.redirect(url.href);
-  });
-
-  app.get("/bff/callback", { config: { rateLimit: limit } }, async (request, reply) => {
-    const query = request.query as Record<string, unknown>;
-    const cookieState = request.cookies[LOGIN_COOKIE_NAME];
-    void reply.clearCookie(LOGIN_COOKIE_NAME, loginCookie());
-    const fail = (reason: string): FastifyReply => {
-      securityLog(request.log, "login_failed", { reason, ip: request.ip });
-      return reply.code(400).send({ error: "login_failed" });
-    };
-
-    // The cookie only carries the transaction ID, which must equal `state`.
-    if (cookieState === undefined || query["state"] !== cookieState) {
-      return fail("state does not match the login cookie");
-    }
-    const transaction = await app.bffStore.takeTransaction(cookieState);
-    if (transaction === undefined) {
-      return fail("unknown or expired login transaction");
-    }
-
-    let tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers;
-    try {
-      const configuration = await app.bffOidc.configuration();
-      tokens = await client.authorizationCodeGrant(
-        configuration,
-        new URL(request.url, config.publicOrigin),
+  app.get(
+    "/bff/login",
+    { config: { rateLimit: limit } },
+    async (request, reply) => {
+      let configuration: client.Configuration;
+      try {
+        configuration = await app.bffOidc.configuration();
+      } catch (error) {
+        return unavailable(request, reply, error);
+      }
+      const query = request.query as Record<string, unknown>;
+      const state = client.randomState();
+      const nonce = client.randomNonce();
+      const codeVerifier = client.randomPKCECodeVerifier();
+      await app.bffStore.putTransaction(
+        state,
         {
-          pkceCodeVerifier: transaction.codeVerifier,
-          expectedNonce: transaction.nonce,
-          expectedState: cookieState,
-          idTokenExpected: true,
+          nonce,
+          codeVerifier,
+          returnTo: safeReturnTo(query["returnTo"], config.publicOrigin),
         },
+        config.session.loginTtlSeconds,
       );
-    } catch (error) {
-      return fail((error as Error).name);
-    }
+      const url = client.buildAuthorizationUrl(configuration, {
+        redirect_uri: redirectUri,
+        scope: config.oidc.scopes,
+        state,
+        nonce,
+        code_challenge: await client.calculatePKCECodeChallenge(codeVerifier),
+        code_challenge_method: "S256",
+      });
+      void reply.setCookie(LOGIN_COOKIE_NAME, state, {
+        ...loginCookie(),
+        maxAge: config.session.loginTtlSeconds,
+      });
+      securityLog(request.log, "login_started", { ip: request.ip });
+      return reply.redirect(url.href);
+    },
+  );
 
-    const claims = tokens.claims() as client.IDToken;
-    const now = nowSeconds();
-    const data = applyTokens(
-      {
-        ...profileOf(claims),
-        roles: extractRoles(claims, tokens.access_token),
-        idToken: "",
-        accessToken: "",
-        refreshToken: null,
-        accessExpiresAt: 0,
-        createdAt: now,
-        absoluteExpiresAt: absoluteExpiry(config, now, tokens["refresh_expires_in"]),
-      },
-      tokens,
-      now,
-    );
+  app.get(
+    "/bff/callback",
+    { config: { rateLimit: limit } },
+    async (request, reply) => {
+      const query = request.query as Record<string, unknown>;
+      const cookieState = request.cookies[LOGIN_COOKIE_NAME];
+      void reply.clearCookie(LOGIN_COOKIE_NAME, loginCookie());
+      const fail = (reason: string): FastifyReply => {
+        securityLog(request.log, "login_failed", { reason, ip: request.ip });
+        return reply.code(400).send({ error: "login_failed" });
+      };
 
-    // Session fixation: a fresh ID at every login; any previous session ends.
-    if (request.bffSession !== null) {
-      await app.bffStore.destroy(request.bffSession.id);
-    }
-    const id = randomId();
-    await app.bffStore.put(id, data, sessionTtlSeconds(config, data, now));
-    setSessionCookie(reply, config, id);
-    securityLog(request.log, "login_success", { sub: data.sub, ip: request.ip });
-    return reply.redirect(transaction.returnTo);
-  });
+      // The cookie only carries the transaction ID, which must equal `state`.
+      if (cookieState === undefined || query["state"] !== cookieState) {
+        return fail("state does not match the login cookie");
+      }
+      const transaction = await app.bffStore.takeTransaction(cookieState);
+      if (transaction === undefined) {
+        return fail("unknown or expired login transaction");
+      }
+
+      let tokens: client.TokenEndpointResponse &
+        client.TokenEndpointResponseHelpers;
+      try {
+        const configuration = await app.bffOidc.configuration();
+        tokens = await client.authorizationCodeGrant(
+          configuration,
+          new URL(request.url, config.publicOrigin),
+          {
+            pkceCodeVerifier: transaction.codeVerifier,
+            expectedNonce: transaction.nonce,
+            expectedState: cookieState,
+            idTokenExpected: true,
+          },
+        );
+      } catch (error) {
+        return fail((error as Error).name);
+      }
+
+      const claims = tokens.claims() as client.IDToken;
+      const now = nowSeconds();
+      const data = applyTokens(
+        {
+          ...profileOf(claims),
+          roles: extractRoles(claims, tokens.access_token),
+          idToken: "",
+          accessToken: "",
+          refreshToken: null,
+          accessExpiresAt: 0,
+          createdAt: now,
+          absoluteExpiresAt: absoluteExpiry(
+            config,
+            now,
+            tokens["refresh_expires_in"],
+          ),
+        },
+        tokens,
+        now,
+      );
+
+      // Session fixation: a fresh ID at every login; any previous session ends.
+      if (request.bffSession !== null) {
+        await app.bffStore.destroy(request.bffSession.id);
+      }
+      const id = randomId();
+      await app.bffStore.put(id, data, sessionTtlSeconds(config, data, now));
+      setSessionCookie(reply, config, id);
+      securityLog(request.log, "login_success", {
+        sub: data.sub,
+        ip: request.ip,
+      });
+      return reply.redirect(transaction.returnTo);
+    },
+  );
 
   app.post("/bff/logout", async (request, reply) => {
     const session = request.bffSession;
@@ -151,7 +189,10 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
     }
     await app.bffStore.destroy(session.id);
     clearSessionCookie(reply, config);
-    securityLog(request.log, "logout", { sub: session.data.sub, ip: request.ip });
+    securityLog(request.log, "logout", {
+      sub: session.data.sub,
+      ip: request.ip,
+    });
     let logoutUrl = `${config.publicOrigin}/`;
     try {
       logoutUrl = client.buildEndSessionUrl(await app.bffOidc.configuration(), {
@@ -170,7 +211,13 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
       return reply.code(401).send({ error: "unauthenticated" });
     }
     const { sub, name, email, roles, absoluteExpiresAt } = session.data;
-    return reply.send({ sub, name, ...(email === null ? {} : { email }), roles, expiresAt: absoluteExpiresAt });
+    return reply.send({
+      sub,
+      name,
+      ...(email === null ? {} : { email }),
+      roles,
+      expiresAt: absoluteExpiresAt,
+    });
   });
 
   app.get("/bff/config", async () => ({
@@ -184,7 +231,10 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
 
   app.post("/bff/backchannel-logout", async (request, reply) => {
     const reject = (reason: string): FastifyReply => {
-      securityLog(request.log, "backchannel_logout_rejected", { reason, ip: request.ip });
+      securityLog(request.log, "backchannel_logout_rejected", {
+        reason,
+        ip: request.ip,
+      });
       return reply.code(400).send({ error: "invalid_request" });
     };
     const body = logoutBodySchema.safeParse(request.body);
@@ -193,7 +243,11 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
     }
     let logout: Awaited<ReturnType<typeof verifyLogoutToken>>;
     try {
-      logout = await verifyLogoutToken(body.data.logout_token, config, await app.bffOidc.jwks());
+      logout = await verifyLogoutToken(
+        body.data.logout_token,
+        config,
+        await app.bffOidc.jwks(),
+      );
     } catch (error) {
       return reject((error as Error).name);
     }
@@ -204,11 +258,17 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
       logout.by === "sid"
         ? await app.bffStore.destroyBySid(logout.value)
         : await app.bffStore.destroyBySub(logout.value);
-    securityLog(request.log, "backchannel_logout", { sub: logout.sub, sessions: ended });
+    securityLog(request.log, "backchannel_logout", {
+      sub: logout.sub,
+      sessions: ended,
+    });
     return reply.send();
   });
 };
 
 /** Login, callback, logout, user, config and back-channel logout. Register after `session` and `@fastify/formbody`. */
-const plugin: FastifyPluginAsync<BffConfig> = fp(auth, { name: "bff-auth", dependencies: ["bff-session"] });
+const plugin: FastifyPluginAsync<BffConfig> = fp(auth, {
+  name: "bff-auth",
+  dependencies: ["bff-session"],
+});
 export default plugin;

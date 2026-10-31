@@ -1,4 +1,8 @@
-import type { FastifyBaseLogger, FastifyRequest, FastifyServerOptions } from "fastify";
+import type {
+  FastifyBaseLogger,
+  FastifyRequest,
+  FastifyServerOptions,
+} from "fastify";
 
 /** Security-relevant events that are always logged as structured JSON. */
 export type SecurityEvent =
@@ -30,7 +34,11 @@ export type SecurityFields = Record<string, string | number | boolean | null>;
  * pass only identifiers that are safe to log (`sub`, `ip`, a reason code),
  * never tokens, cookies, session IDs or authorization codes.
  */
-export function securityLog(log: FastifyBaseLogger, event: SecurityEvent, fields: SecurityFields = {}): void {
+export function securityLog(
+  log: FastifyBaseLogger,
+  event: SecurityEvent,
+  fields: SecurityFields = {},
+): void {
   const level = WARN_EVENTS.has(event) ? "warn" : "info";
   log[level]({ security: true, event, ...fields }, `security event: ${event}`);
 }
@@ -50,8 +58,16 @@ export function pathOf(url: string): string {
 }
 
 /** A request serializer that drops the query string (it carries the authorization code and state). */
-export function serializeRequest(request: FastifyRequest): { method: string; url: string; remoteAddress: string } {
-  return { method: request.method, url: pathOf(request.url), remoteAddress: request.ip };
+export function serializeRequest(request: FastifyRequest): {
+  method: string;
+  url: string;
+  remoteAddress: string;
+} {
+  return {
+    method: request.method,
+    url: pathOf(request.url),
+    remoteAddress: request.ip,
+  };
 }
 
 /** The `logger` option as Fastify 5 accepts it (a logger instance goes in `loggerInstance`, not here). */
@@ -62,14 +78,20 @@ export type LoggerOption = NonNullable<FastifyServerOptions["logger"]>;
  * serializer drops query strings and sensitive headers are redacted.
  * `false` disables logging. Caller-supplied `redact` is replaced.
  */
-export function hardenLogger(logger: FastifyServerOptions["logger"]): LoggerOption {
+export function hardenLogger(
+  logger: FastifyServerOptions["logger"],
+): LoggerOption {
   if (logger === false) {
     return false;
   }
-  const options = logger === undefined || logger === true ? { level: "info" } : logger;
+  const options =
+    logger === undefined || logger === true ? { level: "info" } : logger;
   return {
     ...options,
     redact: { paths: REDACT_PATHS, censor: "[redacted]" },
-    serializers: { ...("serializers" in options ? options.serializers : {}), req: serializeRequest },
+    serializers: {
+      ...("serializers" in options ? options.serializers : {}),
+      req: serializeRequest,
+    },
   };
 }

@@ -63,8 +63,15 @@ export function nowSeconds(): number {
 }
 
 /** How long the store should keep a session: the idle timeout, never past the absolute one. */
-export function sessionTtlSeconds(config: BffConfig, data: SessionData, now: number): number {
-  return Math.max(1, Math.min(config.session.idleSeconds, data.absoluteExpiresAt - now));
+export function sessionTtlSeconds(
+  config: BffConfig,
+  data: SessionData,
+  now: number,
+): number {
+  return Math.max(
+    1,
+    Math.min(config.session.idleSeconds, data.absoluteExpiresAt - now),
+  );
 }
 
 /** The token-endpoint fields the session cares about. */
@@ -74,7 +81,11 @@ export type TokenFields = Pick<
 >;
 
 /** Returns the session with refreshed tokens; absent refresh/ID tokens keep their old values. */
-export function applyTokens(data: SessionData, tokens: TokenFields, now: number): SessionData {
+export function applyTokens(
+  data: SessionData,
+  tokens: TokenFields,
+  now: number,
+): SessionData {
   return {
     ...data,
     accessToken: tokens.access_token,
@@ -88,9 +99,15 @@ export function applyTokens(data: SessionData, tokens: TokenFields, now: number)
  * The absolute session expiry: the configured maximum, but no later than the
  * refresh token's lifetime when the IdP reports one (RFC 10017 6.1.2.2).
  */
-export function absoluteExpiry(config: BffConfig, now: number, refreshExpiresIn: unknown): number {
+export function absoluteExpiry(
+  config: BffConfig,
+  now: number,
+  refreshExpiresIn: unknown,
+): number {
   const max = now + config.session.absoluteSeconds;
-  return typeof refreshExpiresIn === "number" && refreshExpiresIn > 0 ? Math.min(max, now + refreshExpiresIn) : max;
+  return typeof refreshExpiresIn === "number" && refreshExpiresIn > 0
+    ? Math.min(max, now + refreshExpiresIn)
+    : max;
 }
 
 function cookieAttributes(sameSite: "strict" | "lax"): {
@@ -103,11 +120,22 @@ function cookieAttributes(sameSite: "strict" | "lax"): {
 }
 
 /** Sets the session cookie: `Secure; HttpOnly; SameSite=Strict; Path=/`, no `Domain`, session-scoped. */
-export function setSessionCookie(reply: FastifyReply, config: BffConfig, id: string): void {
-  void reply.setCookie(config.session.cookieName, id, cookieAttributes("strict"));
+export function setSessionCookie(
+  reply: FastifyReply,
+  config: BffConfig,
+  id: string,
+): void {
+  void reply.setCookie(
+    config.session.cookieName,
+    id,
+    cookieAttributes("strict"),
+  );
 }
 
-export function clearSessionCookie(reply: FastifyReply, config: BffConfig): void {
+export function clearSessionCookie(
+  reply: FastifyReply,
+  config: BffConfig,
+): void {
   void reply.clearCookie(config.session.cookieName, cookieAttributes("strict"));
 }
 
@@ -120,7 +148,8 @@ function createSession(
 ): BffSession {
   const store = app.bffStore;
   let data = initial;
-  const fresh = (d: SessionData): boolean => d.accessExpiresAt - nowSeconds() > config.session.accessTokenSkewSeconds;
+  const fresh = (d: SessionData): boolean =>
+    d.accessExpiresAt - nowSeconds() > config.session.accessTokenSkewSeconds;
 
   async function fail(d: SessionData): Promise<never> {
     await store.destroy(id);
@@ -134,7 +163,10 @@ function createSession(
     }
     let tokens: client.TokenEndpointResponse;
     try {
-      tokens = await client.refreshTokenGrant(await app.bffOidc.configuration(), d.refreshToken);
+      tokens = await client.refreshTokenGrant(
+        await app.bffOidc.configuration(),
+        d.refreshToken,
+      );
     } catch (error) {
       if (error instanceof client.ResponseBodyError) {
         return fail(d);
@@ -193,7 +225,9 @@ function createSession(
         throw new Error(`unknown upstream: ${upstream}`);
       }
       if (target.tokenExchange) {
-        throw new Error("per-upstream token exchange (RFC 8693) is not implemented");
+        throw new Error(
+          "per-upstream token exchange (RFC 8693) is not implemented",
+        );
       }
       data = await current();
       return data.accessToken;
@@ -203,7 +237,9 @@ function createSession(
 
 function needsSession(url: string): boolean {
   const path = pathOf(url);
-  return path.startsWith("/bff/") || path === "/api" || path.startsWith("/api/");
+  return (
+    path.startsWith("/bff/") || path === "/api" || path.startsWith("/api/")
+  );
 }
 
 const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
@@ -213,7 +249,10 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
   if (owned) {
     app.decorate(
       "bffStore",
-      createValkeySessionStore(config.session.storeUrl, config.session.absoluteSeconds),
+      createValkeySessionStore(
+        config.session.storeUrl,
+        config.session.absoluteSeconds,
+      ),
     );
   }
   app.decorate("bffOidc", createOidcClient(config));
@@ -245,5 +284,7 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
 };
 
 /** Session handling: store, session cookie, `request.bffSession`, token refresh. */
-const plugin: FastifyPluginAsync<BffConfig> = fp(session, { name: "bff-session" });
+const plugin: FastifyPluginAsync<BffConfig> = fp(session, {
+  name: "bff-session",
+});
 export default plugin;

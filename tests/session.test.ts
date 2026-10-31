@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { absoluteExpiry, applyTokens, sessionTtlSeconds } from "../src/session.ts";
+import {
+  absoluteExpiry,
+  applyTokens,
+  sessionTtlSeconds,
+} from "../src/session.ts";
 import type { SessionData } from "../src/session.ts";
 import { testConfig } from "./helpers/bff.ts";
 
@@ -21,12 +25,26 @@ const base: SessionData = {
 describe("applyTokens", () => {
   it("takes every new token and the new expiry", () => {
     expect(
-      applyTokens(base, { access_token: "at", refresh_token: "rt", id_token: "id", expires_in: 300, token_type: "bearer" }, 1000),
-    ).toMatchObject({ accessToken: "at", refreshToken: "rt", idToken: "id", accessExpiresAt: 1300 });
+      applyTokens(
+        base,
+        {
+          access_token: "at",
+          refresh_token: "rt",
+          id_token: "id",
+          expires_in: 300,
+        },
+        1000,
+      ),
+    ).toMatchObject({
+      accessToken: "at",
+      refreshToken: "rt",
+      idToken: "id",
+      accessExpiresAt: 1300,
+    });
   });
 
   it("keeps the old refresh and ID tokens when the IdP omits them, and defaults the expiry", () => {
-    expect(applyTokens(base, { access_token: "at", token_type: "bearer" }, 1000)).toMatchObject({
+    expect(applyTokens(base, { access_token: "at" }, 1000)).toMatchObject({
       accessToken: "at",
       refreshToken: "old-rt",
       idToken: "old-id",
@@ -49,7 +67,11 @@ describe("absoluteExpiry", () => {
 describe("sessionTtlSeconds", () => {
   it("is the idle timeout, never past the absolute expiry, at least a second", () => {
     expect(sessionTtlSeconds(config, base, 0)).toBe(config.session.idleSeconds);
-    expect(sessionTtlSeconds(config, { ...base, absoluteExpiresAt: 50 }, 0)).toBe(50);
-    expect(sessionTtlSeconds(config, { ...base, absoluteExpiresAt: 10 }, 20)).toBe(1);
+    expect(
+      sessionTtlSeconds(config, { ...base, absoluteExpiresAt: 50 }, 0),
+    ).toBe(50);
+    expect(
+      sessionTtlSeconds(config, { ...base, absoluteExpiresAt: 10 }, 20),
+    ).toBe(1);
   });
 });

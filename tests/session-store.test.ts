@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { KvSessionStore, MemoryKv, type KvClient } from "../src/session.ts";
-import { createMemorySessionStore, randomId, type SessionData } from "../src/auth/store.ts";
+import {
+  createMemorySessionStore,
+  randomId,
+  type SessionData,
+} from "../src/auth/store.ts";
 
 function data(over: Partial<SessionData> = {}): SessionData {
   return {
@@ -19,10 +23,18 @@ function data(over: Partial<SessionData> = {}): SessionData {
   };
 }
 
-function setup(): { store: KvSessionStore; kv: MemoryKv; clock: { now: number } } {
+function setup(): {
+  store: KvSessionStore;
+  kv: MemoryKv;
+  clock: { now: number };
+} {
   const clock = { now: 1_000_000 };
   const kv = new MemoryKv(() => clock.now);
-  return { store: new KvSessionStore(kv, { indexTtlSeconds: 3600 }), kv, clock };
+  return {
+    store: new KvSessionStore(kv, { indexTtlSeconds: 3600 }),
+    kv,
+    clock,
+  };
 }
 
 describe("randomId", () => {

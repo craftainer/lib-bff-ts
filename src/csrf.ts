@@ -10,7 +10,11 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  * navigations of the login flow, and the IdP's back-channel logout call,
  * which is authenticated by its signed logout token instead.
  */
-const EXEMPT = new Set(["GET /bff/login", "GET /bff/callback", "POST /bff/backchannel-logout"]);
+const EXEMPT = new Set([
+  "GET /bff/login",
+  "GET /bff/callback",
+  "POST /bff/backchannel-logout",
+]);
 
 function pathOf(url: string): string {
   return new URL(url, "http://localhost").pathname;
@@ -33,7 +37,10 @@ const csrf: FastifyPluginAsync<BffConfig> = async (app, config) => {
     const safe = SAFE_METHODS.has(method);
     const isApi = path === "/api" || path.startsWith("/api/");
     const isBff = path.startsWith("/bff/");
-    const reject = (event: "csrf_rejected" | "origin_rejected", reason: string): FastifyReply => {
+    const reject = (
+      event: "csrf_rejected" | "origin_rejected",
+      reason: string,
+    ): FastifyReply => {
       securityLog(request.log, event, { method, path, reason, ip: request.ip });
       return reply.code(403).send({ error: event });
     };
@@ -41,7 +48,10 @@ const csrf: FastifyPluginAsync<BffConfig> = async (app, config) => {
     if (!safe) {
       const site = request.headers["sec-fetch-site"];
       if (site !== undefined && site !== "same-origin" && site !== "none") {
-        return reject("origin_rejected", `sec-fetch-site: ${String(site).slice(0, 20)}`);
+        return reject(
+          "origin_rejected",
+          `sec-fetch-site: ${String(site).slice(0, 20)}`,
+        );
       }
       const origin = request.headers["origin"];
       if (origin !== undefined && origin !== config.publicOrigin) {

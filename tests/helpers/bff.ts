@@ -1,15 +1,31 @@
 import type { FastifyInstance } from "fastify";
 import { createBff } from "../../src/app.ts";
 import { loadConfig, type BffConfig } from "../../src/config.ts";
-import { createMemorySessionStore, type SessionStore } from "../../src/session.ts";
-import { CLIENT_ID, CLIENT_SECRET, PUBLIC_ORIGIN, SCOPES, type TestIdp } from "./idp.ts";
+import {
+  createMemorySessionStore,
+  type SessionStore,
+} from "../../src/session.ts";
+import {
+  CLIENT_ID,
+  CLIENT_SECRET,
+  PUBLIC_ORIGIN,
+  SCOPES,
+  type TestIdp,
+} from "./idp.ts";
 
 export const UPSTREAMS = JSON.stringify({
-  crud: { url: "http://crud.test:8000", audience: "api", methods: ["GET", "POST"] },
+  crud: {
+    url: "http://crud.test:8000",
+    audience: "api",
+    methods: ["GET", "POST"],
+  },
 });
 
 /** A `BffConfig` pointing at the test IdP; `env` overrides individual variables. */
-export function testConfig(idp: Pick<TestIdp, "issuer">, env: Record<string, string> = {}): BffConfig {
+export function testConfig(
+  idp: Pick<TestIdp, "issuer">,
+  env: Record<string, string> = {},
+): BffConfig {
   return loadConfig({
     PUBLIC_ORIGIN,
     OIDC_ISSUER: idp.issuer,
@@ -36,7 +52,11 @@ export interface TestBff {
 /** Creates the BFF over an in-memory session store, capturing its logs. */
 export async function makeBff(
   idp: Pick<TestIdp, "issuer">,
-  opts: { env?: Record<string, string>; config?: BffConfig; store?: SessionStore } = {},
+  opts: {
+    env?: Record<string, string>;
+    config?: BffConfig;
+    store?: SessionStore;
+  } = {},
 ): Promise<TestBff> {
   const config = opts.config ?? testConfig(idp, opts.env);
   const store = opts.store ?? createMemorySessionStore();
@@ -57,11 +77,15 @@ type Jar = Map<string, string>;
 
 function absorb(jar: Jar, setCookies: string[]): void {
   for (const raw of setCookies) {
-    const [pair = "", ...attributes] = raw.split(";").map((part) => part.trim());
+    const [pair = "", ...attributes] = raw
+      .split(";")
+      .map((part) => part.trim());
     const eq = pair.indexOf("=");
     const name = pair.slice(0, eq);
     const value = pair.slice(eq + 1);
-    const expired = attributes.some((a) => /^max-age=0$/i.test(a)) || attributes.some((a) => /^expires=thu, 01 jan 1970/i.test(a));
+    const expired =
+      attributes.some((a) => /^max-age=0$/i.test(a)) ||
+      attributes.some((a) => /^expires=thu, 01 jan 1970/i.test(a));
     if (value === "" || expired) {
       jar.delete(name);
     } else {
@@ -99,7 +123,11 @@ export class Browser {
   async request(
     method: "GET" | "POST" | "PUT" | "DELETE",
     url: string,
-    opts: { headers?: Record<string, string>; body?: string | Record<string, unknown>; csrf?: boolean } = {},
+    opts: {
+      headers?: Record<string, string>;
+      body?: string | Record<string, unknown>;
+      csrf?: boolean;
+    } = {},
   ): Promise<BffResponse> {
     const headers: Record<string, string> = { ...opts.headers };
     if (this.bffJar.size > 0) {
@@ -114,7 +142,9 @@ export class Browser {
       headers,
       ...(opts.body === undefined ? {} : { payload: opts.body as never }),
     });
-    const setCookies = ([] as string[]).concat((res.headers["set-cookie"] as string[] | string | undefined) ?? []);
+    const setCookies = ([] as string[]).concat(
+      (res.headers["set-cookie"] as string[] | string | undefined) ?? [],
+    );
     absorb(this.bffJar, setCookies);
     return {
       statusCode: res.statusCode,
@@ -126,10 +156,16 @@ export class Browser {
   }
 
   /** Walks the IdP's redirects and sign-in form; returns the callback URL it ends at. */
-  async authenticate(authorizationUrl: string, account = "alice"): Promise<string> {
+  async authenticate(
+    authorizationUrl: string,
+    account = "alice",
+  ): Promise<string> {
     let url = authorizationUrl;
     for (let hop = 0; hop < 12; hop += 1) {
-      const res = await fetch(url, { redirect: "manual", headers: { cookie: header(this.idpJar) } });
+      const res = await fetch(url, {
+        redirect: "manual",
+        headers: { cookie: header(this.idpJar) },
+      });
       absorb(this.idpJar, res.headers.getSetCookie());
       const location = res.headers.get("location");
       if (location !== null) {
@@ -143,8 +179,15 @@ export class Browser {
       const submit = await fetch(`${this.#issuer}/interaction/${uid}`, {
         method: "POST",
         redirect: "manual",
-        headers: { cookie: header(this.idpJar), "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ prompt: "login", login: account, password: "irrelevant" }),
+        headers: {
+          cookie: header(this.idpJar),
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          prompt: "login",
+          login: account,
+          password: "irrelevant",
+        }),
       });
       absorb(this.idpJar, submit.headers.getSetCookie());
       url = new URL(String(submit.headers.get("location")), url).href;
@@ -153,11 +196,23 @@ export class Browser {
   }
 
   /** `GET /bff/login`, sign in at the IdP and return the authorization URL and the callback URL. */
-  async startLogin(returnTo?: string, account = "alice"): Promise<{ authorizationUrl: string; callbackUrl: string; login: BffResponse }> {
-    const query = returnTo === undefined ? "" : `?returnTo=${encodeURIComponent(returnTo)}`;
+  async startLogin(
+    returnTo?: string,
+    account = "alice",
+  ): Promise<{
+    authorizationUrl: string;
+    callbackUrl: string;
+    login: BffResponse;
+  }> {
+    const query =
+      returnTo === undefined ? "" : `?returnTo=${encodeURIComponent(returnTo)}`;
     const login = await this.request("GET", `/bff/login${query}`);
     const authorizationUrl = String(login.headers["location"]);
-    return { authorizationUrl, callbackUrl: await this.authenticate(authorizationUrl, account), login };
+    return {
+      authorizationUrl,
+      callbackUrl: await this.authenticate(authorizationUrl, account),
+      login,
+    };
   }
 
   /** The complete login: returns the callback response (a redirect carrying the session cookie). */

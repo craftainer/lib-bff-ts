@@ -2,7 +2,33 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { MemoryKv, createValkeyKv, type KvClient } from "./kv.ts";
 
-const sessionDataSchema = z.object({
+/** What a session holds server-side. Tokens never reach the browser. */
+export interface SessionData {
+  sub: string;
+  /** The IdP session ID (`sid` claim), when the IdP issues one. */
+  sid: string | null;
+  name: string;
+  email: string | null;
+  roles: Record<string, string[]>;
+  idToken: string;
+  accessToken: string;
+  refreshToken: string | null;
+  /** Epoch seconds. */
+  accessExpiresAt: number;
+  /** Epoch seconds. */
+  createdAt: number;
+  /** Epoch seconds; the session never outlives this, however often it is used. */
+  absoluteExpiresAt: number;
+}
+
+/** The server-side login transaction (state is its key). */
+export interface LoginTransaction {
+  nonce: string;
+  codeVerifier: string;
+  returnTo: string;
+}
+
+const sessionDataSchema: z.ZodType<SessionData> = z.object({
   sub: z.string(),
   sid: z.string().nullable(),
   name: z.string(),
@@ -11,25 +37,16 @@ const sessionDataSchema = z.object({
   idToken: z.string(),
   accessToken: z.string(),
   refreshToken: z.string().nullable(),
-  /** Epoch seconds. */
   accessExpiresAt: z.number(),
-  /** Epoch seconds. */
   createdAt: z.number(),
-  /** Epoch seconds; the session never outlives this, however often it is used. */
   absoluteExpiresAt: z.number(),
 });
 
-/** What a session holds server-side. Tokens never reach the browser. */
-export type SessionData = z.infer<typeof sessionDataSchema>;
-
-const transactionSchema = z.object({
+const transactionSchema: z.ZodType<LoginTransaction> = z.object({
   nonce: z.string(),
   codeVerifier: z.string(),
   returnTo: z.string(),
 });
-
-/** The server-side login transaction (state is its key). */
-export type LoginTransaction = z.infer<typeof transactionSchema>;
 
 /** Persistence for sessions, login transactions and one-time claims. */
 export interface SessionStore {
@@ -48,7 +65,11 @@ export interface SessionStore {
   /** Takes the per-session refresh lock; undefined when someone else holds it. */
   acquireLock(id: string, ttlMs: number): Promise<string | undefined>;
   releaseLock(id: string, token: string): Promise<void>;
-  putTransaction(state: string, tx: LoginTransaction, ttlSeconds: number): Promise<void>;
+  putTransaction(
+    state: string,
+    tx: LoginTransaction,
+    ttlSeconds: number,
+  ): Promise<void>;
   /** Single use: reads and deletes. */
   takeTransaction(state: string): Promise<LoginTransaction | undefined>;
   /** Returns true the first time a key is claimed within its TTL (replay protection). */
@@ -92,8 +113,13 @@ export class KvSessionStore implements SessionStore {
   }
 
   async put(id: string, data: SessionData, ttlSeconds: number): Promise<void> {
-    await this.#kv.set(`sess:${id}`, JSON.stringify(data), { ttlMs: ttlSeconds * 1000 });
-    const indexes = [`sub:${data.sub}`, ...(data.sid === null ? [] : [`sid:${data.sid}`])];
+    await this.#kv.set(`sess:${id}`, JSON.stringify(data), {
+      ttlMs: ttlSeconds * 1000,
+    });
+    const indexes = [
+      `sub:${data.sub}`,
+      ...(data.sid === null ? [] : [`sid:${data.sid}`]),
+    ];
     for (const key of indexes) {
       await this.#kv.sadd(key, id);
       await this.#kv.pexpire(key, this.#indexTtlMs);
@@ -141,15 +167,23 @@ export class KvSessionStore implements SessionStore {
 
   async acquireLock(id: string, ttlMs: number): Promise<string | undefined> {
     const token = randomId();
-    return (await this.#kv.set(`lock:${id}`, token, { ttlMs, nx: true })) ? token : undefined;
+    return (await this.#kv.set(`lock:${id}`, token, { ttlMs, nx: true }))
+      ? token
+      : undefined;
   }
 
   async releaseLock(id: string, token: string): Promise<void> {
     await this.#kv.delIfEquals(`lock:${id}`, token);
   }
 
-  async putTransaction(state: string, tx: LoginTransaction, ttlSeconds: number): Promise<void> {
-    await this.#kv.set(`tx:${state}`, JSON.stringify(tx), { ttlMs: ttlSeconds * 1000 });
+  async putTransaction(
+    state: string,
+    tx: LoginTransaction,
+    ttlSeconds: number,
+  ): Promise<void> {
+    await this.#kv.set(`tx:${state}`, JSON.stringify(tx), {
+      ttlMs: ttlSeconds * 1000,
+    });
   }
 
   async takeTransaction(state: string): Promise<LoginTransaction | undefined> {
@@ -157,7 +191,10 @@ export class KvSessionStore implements SessionStore {
   }
 
   claimOnce(key: string, ttlSeconds: number): Promise<boolean> {
-    return this.#kv.set(`once:${key}`, "1", { ttlMs: ttlSeconds * 1000, nx: true });
+    return this.#kv.set(`once:${key}`, "1", {
+      ttlMs: ttlSeconds * 1000,
+      nx: true,
+    });
   }
 
   ping(): Promise<void> {
@@ -173,10 +210,15 @@ export class KvSessionStore implements SessionStore {
 export function createMemorySessionStore(
   opts: { indexTtlSeconds?: number; now?: () => number } = {},
 ): SessionStore {
-  return new KvSessionStore(new MemoryKv(opts.now), { indexTtlSeconds: opts.indexTtlSeconds ?? 86_400 });
+  return new KvSessionStore(new MemoryKv(opts.now), {
+    indexTtlSeconds: opts.indexTtlSeconds ?? 86_400,
+  });
 }
 
 /** The production store: Valkey via `iovalkey`, connecting lazily on first use. */
-export function createValkeySessionStore(storeUrl: string, indexTtlSeconds: number): SessionStore {
+export function createValkeySessionStore(
+  storeUrl: string,
+  indexTtlSeconds: number,
+): SessionStore {
   return new KvSessionStore(createValkeyKv(storeUrl), { indexTtlSeconds });
 }

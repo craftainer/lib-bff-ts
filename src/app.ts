@@ -1,5 +1,9 @@
 import formbody from "@fastify/formbody";
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyServerOptions } from "fastify";
+import Fastify, {
+  type FastifyError,
+  type FastifyInstance,
+  type FastifyServerOptions,
+} from "fastify";
 import auth from "./auth/index.ts";
 import type { BffConfig } from "./config.ts";
 import csrf from "./csrf.ts";
@@ -25,8 +29,14 @@ export interface CreateBffOptions {
  * connection are lazy: the first login, an authenticated request or
  * `/health/ready` triggers them, so `/health/live` works with neither.
  */
-export async function createBff(config: BffConfig, opts: CreateBffOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: hardenLogger(opts.logger), trustProxy: config.trustProxy });
+export async function createBff(
+  config: BffConfig,
+  opts: CreateBffOptions = {},
+): Promise<FastifyInstance> {
+  const app = Fastify({
+    logger: hardenLogger(opts.logger),
+    trustProxy: config.trustProxy,
+  });
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const status = error.statusCode ?? 500;

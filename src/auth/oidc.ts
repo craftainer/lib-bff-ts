@@ -28,11 +28,15 @@ export function createOidcClient(config: BffConfig): OidcClient {
       undefined,
       {
         timeout: 10,
-        ...(config.oidc.allowInsecure ? { execute: [client.allowInsecureRequests] } : {}),
+        ...(config.oidc.allowInsecure
+          ? { execute: [client.allowInsecureRequests] }
+          : {}),
       },
     );
     if (configuration.serverMetadata().issuer !== config.oidc.issuer) {
-      throw new Error("IdP discovery document issuer does not match OIDC_ISSUER");
+      throw new Error(
+        "IdP discovery document issuer does not match OIDC_ISSUER",
+      );
     }
     return configuration;
   }

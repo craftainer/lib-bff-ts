@@ -8,7 +8,10 @@ interface Call {
   args: unknown[];
 }
 
-function fake(replies: Record<string, unknown> = {}, status = "ready"): { client: Valkey; calls: Call[] } {
+function fake(
+  replies: Record<string, unknown> = {},
+  status = "ready",
+): { client: Valkey; calls: Call[] } {
   const calls: Call[] = [];
   const client = new Proxy(
     { status },
@@ -19,7 +22,9 @@ function fake(replies: Record<string, unknown> = {}, status = "ready"): { client
         }
         return (...args: unknown[]) => {
           calls.push({ method: prop, args });
-          return prop === "disconnect" ? undefined : Promise.resolve(replies[prop] ?? null);
+          return prop === "disconnect"
+            ? undefined
+            : Promise.resolve(replies[prop] ?? null);
         };
       },
     },
@@ -29,7 +34,15 @@ function fake(replies: Record<string, unknown> = {}, status = "ready"): { client
 
 describe("ValkeyKv", () => {
   it("maps each operation to the right command", async () => {
-    const { client, calls } = fake({ set: "OK", del: 2, pexpire: 1, eval: 1, smembers: ["a"], get: "v", getdel: "g" });
+    const { client, calls } = fake({
+      set: "OK",
+      del: 2,
+      pexpire: 1,
+      eval: 1,
+      smembers: ["a"],
+      get: "v",
+      getdel: "g",
+    });
     const kv = new ValkeyKv(client);
     expect(await kv.get("k")).toBe("v");
     expect(await kv.set("k", "v", { ttlMs: 5 })).toBe(true);
@@ -53,7 +66,13 @@ describe("ValkeyKv", () => {
       ["sadd", "s", "m"],
       ["srem", "s", "m"],
       ["smembers", "s"],
-      ["eval", expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'), 1, "k", "v"],
+      [
+        "eval",
+        expect.stringContaining('redis.call("get", KEYS[1]) == ARGV[1]'),
+        1,
+        "k",
+        "v",
+      ],
       ["ping"],
       ["quit"],
     ]);
@@ -76,7 +95,11 @@ describe("ValkeyKv", () => {
 
 describe("createValkeyKv", () => {
   it("builds a lazy client without connecting, for valkey:// and redis:// URLs", async () => {
-    for (const url of ["valkey://localhost:1", "valkeys://localhost:1", "redis://localhost:1"]) {
+    for (const url of [
+      "valkey://localhost:1",
+      "valkeys://localhost:1",
+      "redis://localhost:1",
+    ]) {
       const kv = createValkeyKv(url);
       await kv.quit();
     }

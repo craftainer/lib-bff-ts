@@ -9,18 +9,25 @@ let idp: TestIdp;
 type Step = { value: SessionData | undefined } | "real";
 
 /** A store whose next `get` calls return scripted results; afterwards it delegates. */
-function scripted(inner: SessionStore): { store: SessionStore; script: Step[] } {
+function scripted(inner: SessionStore): {
+  store: SessionStore;
+  script: Step[];
+} {
   const script: Step[] = [];
   const store = new Proxy(inner, {
     get(target, prop) {
       if (prop === "get") {
         return async (id: string) => {
           const step = script.shift();
-          return step === undefined || step === "real" ? target.get(id) : step.value;
+          return step === undefined || step === "real"
+            ? target.get(id)
+            : step.value;
         };
       }
       const value = Reflect.get(target, prop) as unknown;
-      return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      return typeof value === "function"
+        ? (value as (...a: unknown[]) => unknown).bind(target)
+        : value;
     },
   });
   return { store, script };
@@ -37,8 +44,17 @@ function register(bff: TestBff): void {
 }
 
 async function loggedIn(
-  opts: { env?: Record<string, string>; config?: ReturnType<typeof testConfig> } = {},
-): Promise<{ bff: TestBff; id: string; data: SessionData; inner: SessionStore; script: Step[] }> {
+  opts: {
+    env?: Record<string, string>;
+    config?: ReturnType<typeof testConfig>;
+  } = {},
+): Promise<{
+  bff: TestBff;
+  id: string;
+  data: SessionData;
+  inner: SessionStore;
+  script: Step[];
+}> {
   const inner = createMemorySessionStore();
   const { store, script } = scripted(inner);
   const bff = await makeBff(idp, { store, ...opts });
@@ -57,7 +73,11 @@ afterAll(async () => {
   await idp.close();
 });
 
-async function expire(inner: SessionStore, id: string, data: SessionData): Promise<void> {
+async function expire(
+  inner: SessionStore,
+  id: string,
+  data: SessionData,
+): Promise<void> {
   await inner.put(id, { ...data, accessExpiresAt: 0 }, 600);
 }
 
@@ -91,19 +111,33 @@ describe("access token refresh", () => {
 
   it("destroys the session and answers 401 when the refresh is rejected", async () => {
     const { bff, id, data, inner } = await loggedIn();
-    await inner.put(id, { ...data, accessExpiresAt: 0, refreshToken: "revoked-or-garbage" }, 600);
+    await inner.put(
+      id,
+      { ...data, accessExpiresAt: 0, refreshToken: "revoked-or-garbage" },
+      600,
+    );
     const res = await bff.browser.request("GET", "/bff/test-token");
     expect(res.statusCode).toBe(401);
     expect(res.json()).toEqual({ error: "session_expired" });
     expect(await inner.get(id)).toBeUndefined();
-    expect(bff.logs.some((l) => l["event"] === "refresh_failed" && l["sub"] === "alice")).toBe(true);
+    expect(
+      bff.logs.some(
+        (l) => l["event"] === "refresh_failed" && l["sub"] === "alice",
+      ),
+    ).toBe(true);
     await bff.app.close();
   });
 
   it("fails like a rejected refresh when there is no refresh token", async () => {
     const { bff, id, data, inner } = await loggedIn();
-    await inner.put(id, { ...data, accessExpiresAt: 0, refreshToken: null }, 600);
-    expect((await bff.browser.request("GET", "/bff/test-token")).statusCode).toBe(401);
+    await inner.put(
+      id,
+      { ...data, accessExpiresAt: 0, refreshToken: null },
+      600,
+    );
+    expect(
+      (await bff.browser.request("GET", "/bff/test-token")).statusCode,
+    ).toBe(401);
     expect(await inner.get(id)).toBeUndefined();
     await bff.app.close();
   });
@@ -135,7 +169,9 @@ describe("access token refresh", () => {
 
   it("rejects unknown upstreams and the unimplemented token exchange", async () => {
     const { bff } = await loggedIn();
-    expect((await bff.browser.request("GET", "/bff/test-token?u=nope")).statusCode).toBe(500);
+    expect(
+      (await bff.browser.request("GET", "/bff/test-token?u=nope")).statusCode,
+    ).toBe(500);
     await bff.app.close();
 
     const inner = createMemorySessionStore();
@@ -143,13 +179,20 @@ describe("access token refresh", () => {
       store: inner,
       env: {
         BFF_UPSTREAMS: JSON.stringify({
-          crud: { url: "http://crud.test", audience: "api", methods: ["GET"], tokenExchange: true },
+          crud: {
+            url: "http://crud.test",
+            audience: "api",
+            methods: ["GET"],
+            tokenExchange: true,
+          },
         }),
       },
     });
     register(exchange);
     await exchange.browser.login();
-    expect((await exchange.browser.request("GET", "/bff/test-token")).statusCode).toBe(500);
+    expect(
+      (await exchange.browser.request("GET", "/bff/test-token")).statusCode,
+    ).toBe(500);
     await exchange.app.close();
   });
 });
@@ -165,7 +208,9 @@ describe("refresh lock", () => {
     const { bff, id, data, inner, script } = await loggedIn();
     await expire(inner, id, data);
     script.push("real", { value: undefined });
-    expect((await bff.browser.request("GET", "/bff/test-token")).statusCode).toBe(401);
+    expect(
+      (await bff.browser.request("GET", "/bff/test-token")).statusCode,
+    ).toBe(401);
     await bff.app.close();
   });
 
@@ -193,13 +238,21 @@ describe("refresh lock", () => {
     await expire(inner, id, data);
     await inner.acquireLock(id, 60_000);
     script.push("real", { value: undefined });
-    expect((await bff.browser.request("GET", "/bff/test-token")).statusCode).toBe(401);
+    expect(
+      (await bff.browser.request("GET", "/bff/test-token")).statusCode,
+    ).toBe(401);
     await bff.app.close();
   });
 
   it("gives up with 503 when the lock holder never finishes", async () => {
     const base = testConfig(idp);
-    const config = { ...base, session: { ...base.session, refreshLock: { ttlMs: 5000, waitMs: 60, pollMs: 10 } } };
+    const config = {
+      ...base,
+      session: {
+        ...base.session,
+        refreshLock: { ttlMs: 5000, waitMs: 60, pollMs: 10 },
+      },
+    };
     const { bff, id, data, inner } = await loggedIn({ config });
     await expire(inner, id, data);
     await inner.acquireLock(id, 60_000);

@@ -14,7 +14,10 @@ const health: FastifyPluginAsync<BffConfig> = async (app) => {
   app.get("/health/live", async () => ({ status: "ok" }));
 
   app.get("/health/ready", async (request, reply) => {
-    const [store, idp] = await Promise.allSettled([app.bffStore.ping(), app.bffOidc.configuration()]);
+    const [store, idp] = await Promise.allSettled([
+      app.bffStore.ping(),
+      app.bffOidc.configuration(),
+    ]);
     const checks: Record<"store" | "idp", Check> = {
       store: store.status === "fulfilled" ? "ok" : "unavailable",
       idp: idp.status === "fulfilled" ? "ok" : "unavailable",
@@ -24,14 +27,22 @@ const health: FastifyPluginAsync<BffConfig> = async (app) => {
       ["idp", idp],
     ] as const) {
       if (result.status === "rejected") {
-        request.log.warn({ check: name, err: String(result.reason) }, "readiness check failed");
+        request.log.warn(
+          { check: name, err: String(result.reason) },
+          "readiness check failed",
+        );
       }
     }
     const ready = checks.store === "ok" && checks.idp === "ok";
-    return reply.code(ready ? 200 : 503).send({ status: ready ? "ok" : "unavailable", checks });
+    return reply
+      .code(ready ? 200 : 503)
+      .send({ status: ready ? "ok" : "unavailable", checks });
   });
 };
 
 /** Health endpoints. Register after `session`. */
-const plugin: FastifyPluginAsync<BffConfig> = fp(health, { name: "bff-health", dependencies: ["bff-session"] });
+const plugin: FastifyPluginAsync<BffConfig> = fp(health, {
+  name: "bff-health",
+  dependencies: ["bff-session"],
+});
 export default plugin;
