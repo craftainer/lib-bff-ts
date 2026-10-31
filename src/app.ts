@@ -10,6 +10,7 @@ import csrf from "./csrf.ts";
 import health from "./health.ts";
 import { hardenLogger } from "./log.ts";
 import session, { BffHttpError, type SessionStore } from "./session.ts";
+import wellKnown from "./well-known.ts";
 
 /** Options for {@link createBff}. */
 export interface CreateBffOptions {
@@ -71,7 +72,7 @@ export async function createBff(
   await app.register(health, config);
   await app.register(formbody, { bodyLimit: 16 * 1024 });
   await app.register(auth, config);
-  // LB4: await app.register(wellKnown, config);
+  await app.register(wellKnown, config);
   // LB5: await app.register(analytics, config);
   // LB3: await app.register(proxy, config);
   // LB3: await app.register(staticFiles, config);

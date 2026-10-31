@@ -16,6 +16,7 @@ describe("public API", () => {
         "loadConfig",
         "securityLog",
         "session",
+        "wellKnown",
       ].sort(),
     );
   });
