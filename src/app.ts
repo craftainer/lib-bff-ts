@@ -4,6 +4,7 @@ import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
 } from "fastify";
+import analytics from "./analytics/index.ts";
 import auth from "./auth/index.ts";
 import type { BffConfig } from "./config.ts";
 import csrf from "./csrf.ts";
@@ -72,7 +73,7 @@ export async function createBff(
   await app.register(formbody, { bodyLimit: 16 * 1024 });
   await app.register(auth, config);
   // LB4: await app.register(wellKnown, config);
-  // LB5: await app.register(analytics, config);
+  await app.register(analytics, config);
   // LB3: await app.register(proxy, config);
   // LB3: await app.register(staticFiles, config);
 

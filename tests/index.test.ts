@@ -8,6 +8,7 @@ describe("public API", () => {
         "BffHttpError",
         "ConfigError",
         "LOGIN_COOKIE_NAME",
+        "analytics",
         "auth",
         "createBff",
         "createMemorySessionStore",
