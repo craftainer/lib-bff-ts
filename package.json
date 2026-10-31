@@ -1,15 +1,15 @@
 {
-  "name": "template-npm-package",
+  "name": "@craftainer/bff",
   "version": "0.0.0",
-  "description": "Example ESM TypeScript package: replace with the real description.",
+  "description": "Backend-for-Frontend for craftainer SPAs: confidential OIDC client, server-side sessions, allowlisted API proxy.",
   "license": "GPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/craftainer/template-npm-package.git"
+    "url": "git+https://github.com/craftainer/lib-bff-ts.git"
   },
-  "homepage": "https://github.com/craftainer/template-npm-package#readme",
+  "homepage": "https://github.com/craftainer/lib-bff-ts#readme",
   "bugs": {
-    "url": "https://github.com/craftainer/template-npm-package/issues"
+    "url": "https://github.com/craftainer/lib-bff-ts/issues"
   },
   "type": "module",
   "sideEffects": false,
@@ -26,10 +26,6 @@
     ".": {
       "types": "./dist/index.d.mts",
       "default": "./dist/index.mjs"
-    },
-    "./extra": {
-      "types": "./dist/extra.d.mts",
-      "default": "./dist/extra.mjs"
     },
     "./package.json": "./package.json"
   },

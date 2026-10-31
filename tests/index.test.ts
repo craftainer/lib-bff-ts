@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { total } from "../src/index.ts";
+import { PACKAGE_NAME } from "../src/index.ts";
 
-describe("total", () => {
-  it("sums the values", () => {
-    expect(total([1, 2, 3])).toBe(6);
-  });
-
-  it("returns 0 when empty", () => {
-    expect(total([])).toBe(0);
+describe("index", () => {
+  it("exports the package name", () => {
+    expect(PACKAGE_NAME).toBe("@craftainer/bff");
   });
 });
