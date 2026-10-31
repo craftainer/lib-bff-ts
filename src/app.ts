@@ -7,9 +7,12 @@ import Fastify, {
 import auth from "./auth/index.ts";
 import type { BffConfig } from "./config.ts";
 import csrf from "./csrf.ts";
+import headers from "./headers.ts";
 import health from "./health.ts";
 import { hardenLogger } from "./log.ts";
+import proxy from "./proxy.ts";
 import session, { BffHttpError, type SessionStore } from "./session.ts";
+import staticFiles from "./static.ts";
 
 /** Options for {@link createBff}. */
 export interface CreateBffOptions {
@@ -53,7 +56,7 @@ export async function createBff(
 
   // Registration list, in the order of interface I1. LB3 to LB5 replace
   // their comment with the real line and keep this order.
-  // LB3: await app.register(headers, config);
+  await app.register(headers, config);
   await app.register(csrf, config);
   await app.register(session, config);
   await app.register(health, config);
@@ -61,8 +64,8 @@ export async function createBff(
   await app.register(auth, config);
   // LB4: await app.register(wellKnown, config);
   // LB5: await app.register(analytics, config);
-  // LB3: await app.register(proxy, config);
-  // LB3: await app.register(staticFiles, config);
+  await app.register(proxy, config);
+  await app.register(staticFiles, config);
 
   return app;
 }

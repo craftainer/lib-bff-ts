@@ -10,7 +10,10 @@ export {
 } from "./config.ts";
 export { default as auth } from "./auth/index.ts";
 export { default as csrf } from "./csrf.ts";
+export { default as headers } from "./headers.ts";
 export { default as health } from "./health.ts";
+export { default as proxy } from "./proxy.ts";
+export { default as staticFiles } from "./static.ts";
 export { securityLog, type SecurityEvent, type SecurityFields } from "./log.ts";
 export {
   default as session,
