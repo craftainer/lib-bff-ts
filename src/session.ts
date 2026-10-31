@@ -4,7 +4,7 @@ import fp from "fastify-plugin";
 import * as client from "openid-client";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { BffConfig } from "./config.ts";
-import { pathOf, securityLog } from "./log.ts";
+import { isAnomalousTarget, pathOf, securityLog } from "./log.ts";
 import { createOidcClient, type OidcClient } from "./auth/oidc.ts";
 import {
   createValkeySessionStore,
@@ -70,7 +70,9 @@ export function sessionTtlSeconds(
 ): number {
   return Math.max(
     1,
-    Math.min(config.session.idleSeconds, data.absoluteExpiresAt - now),
+    Math.floor(
+      Math.min(config.session.idleSeconds, data.absoluteExpiresAt - now),
+    ),
   );
 }
 
@@ -106,7 +108,7 @@ export function absoluteExpiry(
 ): number {
   const max = now + config.session.absoluteSeconds;
   return typeof refreshExpiresIn === "number" && refreshExpiresIn > 0
-    ? Math.min(max, now + refreshExpiresIn)
+    ? Math.min(max, now + Math.max(1, Math.floor(refreshExpiresIn)))
     : max;
 }
 
@@ -168,7 +170,11 @@ function createSession(
         d.refreshToken,
       );
     } catch (error) {
-      if (error instanceof client.ResponseBodyError) {
+      // Only a definitive rejection of the refresh token ends the session.
+      if (
+        error instanceof client.ResponseBodyError &&
+        error.error === "invalid_grant"
+      ) {
         return fail(d);
       }
       log.error({ err: error }, "token refresh unavailable");
@@ -176,7 +182,16 @@ function createSession(
     }
     const now = nowSeconds();
     const next = applyTokens(d, tokens, now);
-    await store.put(id, next, sessionTtlSeconds(config, next, now));
+    // Conditional write: a logout that landed during the refresh must stay logged out.
+    if (
+      !(await store.replace(
+        id,
+        next,
+        sessionTtlSeconds(config, next, now) * 1000,
+      ))
+    ) {
+      throw new BffHttpError(401, "session_expired");
+    }
     return next;
   }
 
@@ -238,7 +253,10 @@ function createSession(
 function needsSession(url: string): boolean {
   const path = pathOf(url);
   return (
-    path.startsWith("/bff/") || path === "/api" || path.startsWith("/api/")
+    isAnomalousTarget(url) ||
+    path.startsWith("/bff/") ||
+    path === "/api" ||
+    path.startsWith("/api/")
   );
 }
 

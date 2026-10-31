@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { z } from "zod";
 
 /** HTTP methods an upstream may allow. */
@@ -67,8 +68,12 @@ export interface BffConfig {
   staticDir: string | null;
   /** The browser-facing origin (`https://host[:port]`, no path). Never derived from the Host header. */
   publicOrigin: string;
-  /** Passed to Fastify's `trustProxy` (affects `request.ip`, hence rate limiting). */
-  trustProxy: boolean;
+  /**
+   * Passed to Fastify's `trustProxy` (affects `request.ip`, hence rate
+   * limiting): `false`, `true` (trust every hop; avoid), a hop count, or a
+   * list of proxy IPs / CIDRs / `loopback`, `linklocal`, `uniquelocal`.
+   */
+  trustProxy: boolean | number | string[];
   oidc: {
     issuer: string;
     /** Full `.../.well-known/openid-configuration` URL. */
@@ -122,6 +127,49 @@ const bool = (fallback: boolean): z.ZodType<boolean> =>
         .transform((v) => v === "true" || v === "1"),
     )
     .pipe(z.boolean());
+
+const PROXY_KEYWORDS = new Set(["loopback", "linklocal", "uniquelocal"]);
+
+function validProxyEntry(entry: string): boolean {
+  if (PROXY_KEYWORDS.has(entry)) {
+    return true;
+  }
+  const [address, prefix, ...rest] = entry.split("/");
+  const family = isIP(address as string);
+  if (family === 0 || rest.length > 0) {
+    return false;
+  }
+  if (prefix === undefined) {
+    return true;
+  }
+  return (
+    /^[0-9]{1,3}$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128)
+  );
+}
+
+/** `true`/`false`, a non-negative hop count, or a comma-separated IP/CIDR list. */
+const trustProxy = z
+  .string()
+  .optional()
+  .transform((v, ctx): boolean | number | string[] => {
+    const value = (v ?? "false").trim();
+    if (value === "true" || value === "false") {
+      return value === "true";
+    }
+    if (/^[0-9]{1,3}$/.test(value)) {
+      return Number(value);
+    }
+    const entries = value.split(",").map((e) => e.trim());
+    if (entries.every((e) => e !== "" && validProxyEntry(e))) {
+      return entries;
+    }
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "must be true, false, a hop count, or a comma-separated list of IPs/CIDRs",
+    });
+    return z.NEVER;
+  });
 
 const positiveInt = (fallback: number, max = 31_536_000): z.ZodType<number> =>
   z
@@ -182,7 +230,7 @@ const envSchema = z.object({
     .pipe(z.number().int().min(1).max(65535)),
   BFF_HOST: z.string().default("0.0.0.0"),
   BFF_STATIC_DIR: optionalString,
-  BFF_TRUST_PROXY: bool(false),
+  BFF_TRUST_PROXY: trustProxy,
   PUBLIC_ORIGIN: z.string().min(1),
   OIDC_ISSUER: z.url(),
   OIDC_DISCOVERY_URL: optionalString,
@@ -425,7 +473,7 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
       cookieName: e.SESSION_COOKIE_NAME,
       loginTtlSeconds: 300,
       accessTokenSkewSeconds: 30,
-      refreshLock: { ttlMs: 10_000, waitMs: 5_000, pollMs: 25 },
+      refreshLock: { ttlMs: 30_000, waitMs: 30_000, pollMs: 25 },
     },
     rateLimit: {
       max: e.RATE_LIMIT_MAX,

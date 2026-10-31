@@ -19,6 +19,8 @@ import { extractRoles } from "./roles.ts";
 import { safeReturnTo } from "./return-to.ts";
 import { randomId } from "./store.ts";
 
+const REVOCATION_TIMEOUT_MS = 2000;
+
 const logoutBodySchema = z.object({ logout_token: z.string().min(1) });
 
 function loginCookie(): {
@@ -65,6 +67,42 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
   ): FastifyReply {
     request.log.error({ err: error }, "IdP unavailable");
     return reply.code(503).send({ error: "idp_unavailable" });
+  }
+
+  /**
+   * Best-effort RFC 7009 revocation of the refresh token on an explicit
+   * logout, when the IdP advertises `revocation_endpoint`. Awaited for at
+   * most 2 s; a failure is logged and never blocks the logout.
+   */
+  async function revokeRefreshToken(
+    request: FastifyRequest,
+    configuration: client.Configuration,
+    refreshToken: string,
+    sub: string,
+  ): Promise<void> {
+    if (configuration.serverMetadata().revocation_endpoint === undefined) {
+      return;
+    }
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        client.tokenRevocation(configuration, refreshToken, {
+          token_type_hint: "refresh_token",
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("revocation timed out"));
+          }, REVOCATION_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (error) {
+      securityLog(request.log, "token_revocation_failed", {
+        sub,
+        reason: (error as Error).name,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   app.get(
@@ -151,7 +189,12 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
       const data = applyTokens(
         {
           ...profileOf(claims),
-          roles: extractRoles(claims, tokens.access_token),
+          roles: extractRoles(claims, tokens.access_token, (clientId) => {
+            request.log.warn(
+              { clientId: clientId.slice(0, 64) },
+              "ignored a reserved client ID in the roles claims",
+            );
+          }),
           idToken: "",
           accessToken: "",
           refreshToken: null,
@@ -187,20 +230,23 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
     if (session === null) {
       return reply.code(401).send({ error: "unauthenticated" });
     }
+    const { sub, idToken, refreshToken } = session.data;
     await app.bffStore.destroy(session.id);
     clearSessionCookie(reply, config);
-    securityLog(request.log, "logout", {
-      sub: session.data.sub,
-      ip: request.ip,
-    });
+    securityLog(request.log, "logout", { sub, ip: request.ip });
     let logoutUrl = `${config.publicOrigin}/`;
+    let configuration: client.Configuration | undefined;
     try {
-      logoutUrl = client.buildEndSessionUrl(await app.bffOidc.configuration(), {
-        id_token_hint: session.data.idToken,
+      configuration = await app.bffOidc.configuration();
+      logoutUrl = client.buildEndSessionUrl(configuration, {
+        id_token_hint: idToken,
         post_logout_redirect_uri: logoutUrl,
       }).href;
     } catch (error) {
       request.log.warn({ err: error }, "no IdP logout URL");
+    }
+    if (configuration !== undefined && refreshToken !== null) {
+      await revokeRefreshToken(request, configuration, refreshToken, sub);
     }
     return reply.send({ logoutUrl });
   });
@@ -229,41 +275,47 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
     upstreams: Object.keys(config.upstreams),
   }));
 
-  app.post("/bff/backchannel-logout", async (request, reply) => {
-    const reject = (reason: string): FastifyReply => {
-      securityLog(request.log, "backchannel_logout_rejected", {
-        reason,
-        ip: request.ip,
+  // No rate limit here on purpose: the IdP is the caller and throttling would
+  // drop real logouts; the signed logout token authenticates the request.
+  app.post(
+    "/bff/backchannel-logout",
+    { bodyLimit: 16 * 1024 },
+    async (request, reply) => {
+      const reject = (reason: string): FastifyReply => {
+        securityLog(request.log, "backchannel_logout_rejected", {
+          reason,
+          ip: request.ip,
+        });
+        return reply.code(400).send({ error: "invalid_request" });
+      };
+      const body = logoutBodySchema.safeParse(request.body);
+      if (!body.success) {
+        return reject("missing logout_token");
+      }
+      let logout: Awaited<ReturnType<typeof verifyLogoutToken>>;
+      try {
+        logout = await verifyLogoutToken(
+          body.data.logout_token,
+          config,
+          await app.bffOidc.jwks(),
+        );
+      } catch (error) {
+        return reject((error as Error).name);
+      }
+      if (!(await app.bffStore.claimOnce(`jti:${logout.jti}`, 600))) {
+        return reject("logout token replayed");
+      }
+      const ended =
+        logout.by === "sid"
+          ? await app.bffStore.destroyBySid(logout.value)
+          : await app.bffStore.destroyBySub(logout.value);
+      securityLog(request.log, "backchannel_logout", {
+        sub: logout.sub,
+        sessions: ended,
       });
-      return reply.code(400).send({ error: "invalid_request" });
-    };
-    const body = logoutBodySchema.safeParse(request.body);
-    if (!body.success) {
-      return reject("missing logout_token");
-    }
-    let logout: Awaited<ReturnType<typeof verifyLogoutToken>>;
-    try {
-      logout = await verifyLogoutToken(
-        body.data.logout_token,
-        config,
-        await app.bffOidc.jwks(),
-      );
-    } catch (error) {
-      return reject((error as Error).name);
-    }
-    if (!(await app.bffStore.claimOnce(`jti:${logout.jti}`, 600))) {
-      return reject("logout token replayed");
-    }
-    const ended =
-      logout.by === "sid"
-        ? await app.bffStore.destroyBySid(logout.value)
-        : await app.bffStore.destroyBySub(logout.value);
-    securityLog(request.log, "backchannel_logout", {
-      sub: logout.sub,
-      sessions: ended,
-    });
-    return reply.send();
-  });
+      return reply.send();
+    },
+  );
 };
 
 /** Login, callback, logout, user, config and back-channel logout. Register after `session` and `@fastify/formbody`. */

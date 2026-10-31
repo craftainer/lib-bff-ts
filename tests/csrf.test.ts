@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { isAnomalousTarget, pathOf } from "../src/log.ts";
 import { makeBff, type TestBff } from "./helpers/bff.ts";
 import { PUBLIC_ORIGIN, startIdp, type TestIdp } from "./helpers/idp.ts";
 
@@ -152,5 +153,48 @@ describe("Origin and Fetch Metadata", () => {
       level: 40,
     });
     expect(JSON.stringify(bff.logs)).not.toContain("SUPERSECRET");
+  });
+});
+
+describe("request-target canonicalisation", () => {
+  it("guards targets that do not start with exactly one slash (fail closed)", async () => {
+    for (const url of ["//bff/logout", "//api/x", "///bff/logout"]) {
+      expect((await send("POST", url)).statusCode).toBe(403);
+      expect((await send("GET", url)).statusCode).toBe(403);
+    }
+    expect(
+      (await send("POST", "//bff/logout", { "x-csrf": "1" })).statusCode,
+    ).toBe(404);
+  });
+
+  it("guards /bff//logout and percent-encoded spellings of guarded paths", async () => {
+    expect((await send("POST", "/bff//logout")).statusCode).toBe(403);
+    expect((await send("POST", "/%62ff/logout")).statusCode).toBe(403);
+    expect((await send("POST", "/bff%2Flogout")).statusCode).toBe(404);
+    expect((await send("GET", "/%61pi/crud")).statusCode).toBe(403);
+    // Fastify answers a malformed escape itself, before any hook.
+    expect((await send("GET", "/api/%zz")).statusCode).toBe(400);
+  });
+
+  it("does not let an encoded spelling slip past the exemption list", async () => {
+    // The router decodes `%6C` to `l`, so this is GET /bff/login: exempt, like the plain spelling.
+    expect((await send("GET", "/bff/%6Cogin")).statusCode).toBe(302);
+    // An encoded backchannel path is still the exempt, token-authenticated POST.
+    expect((await send("POST", "/bff/backchannel%2Dlogout")).statusCode).toBe(
+      400,
+    );
+  });
+});
+
+describe("pathOf and isAnomalousTarget", () => {
+  it("share one canonical, router-consistent reading of a request target", () => {
+    expect(pathOf("/bff/user?x=1#f")).toBe("/bff/user");
+    expect(pathOf("/%62ff/user")).toBe("/bff/user");
+    expect(pathOf("/bad/%zz")).toBe("/bad/%zz");
+    expect(isAnomalousTarget("/bff/user?q=//")).toBe(false);
+    expect(isAnomalousTarget("//bff/user")).toBe(true);
+    expect(isAnomalousTarget("http://evil.test/bff/user")).toBe(true);
+    expect(isAnomalousTarget("*")).toBe(true);
+    expect(isAnomalousTarget("/bad/%zz")).toBe(true);
   });
 });

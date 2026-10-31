@@ -10,16 +10,26 @@ const rolesSchema = z
   })
   .catch({});
 
-function fromClaims(claims: Record<string, unknown>): Record<string, string[]> {
+/** Client IDs that must never become role keys: `realm` is the realm-roles key, `__proto__` is unsafe. */
+const RESERVED_KEYS: ReadonlySet<string> = new Set(["realm", "__proto__"]);
+
+function fromClaims(
+  claims: Record<string, unknown>,
+  onSkipped: (clientId: string) => void,
+): Map<string, string[]> {
   const parsed = rolesSchema.parse(claims);
-  const roles: Record<string, string[]> = {};
+  const roles = new Map<string, string[]>();
   if (parsed.realm_access !== undefined) {
-    roles["realm"] = parsed.realm_access.roles;
+    roles.set("realm", parsed.realm_access.roles);
   }
   for (const [clientId, access] of Object.entries(
     parsed.resource_access ?? {},
   )) {
-    roles[clientId] = access.roles;
+    if (RESERVED_KEYS.has(clientId)) {
+      onSkipped(clientId);
+    } else {
+      roles.set(clientId, access.roles);
+    }
   }
   return roles;
 }
@@ -42,15 +52,24 @@ function claimsOf(token: string): Record<string, unknown> {
 export function extractRoles(
   idTokenClaims: Record<string, unknown>,
   accessToken: string,
+  onSkipped: (clientId: string) => void = () => undefined,
 ): Record<string, string[]> {
-  const merged: Record<string, string[]> = {};
+  const merged = new Map<string, string[]>();
   for (const source of [
-    fromClaims(claimsOf(accessToken)),
-    fromClaims(idTokenClaims),
+    fromClaims(claimsOf(accessToken), onSkipped),
+    fromClaims(idTokenClaims, onSkipped),
   ]) {
-    for (const [key, roles] of Object.entries(source)) {
-      merged[key] = [...new Set([...(merged[key] ?? []), ...roles])];
+    for (const [key, roles] of source) {
+      merged.set(key, [...new Set([...(merged.get(key) ?? []), ...roles])]);
     }
   }
-  return merged;
+  // No prototype: a role key can never collide with Object.prototype members.
+  const result: Record<string, string[]> = Object.create(null) as Record<
+    string,
+    string[]
+  >;
+  for (const [key, roles] of merged) {
+    result[key] = roles;
+  }
+  return result;
 }

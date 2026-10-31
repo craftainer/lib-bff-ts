@@ -58,6 +58,19 @@ unstarted instance. These choices are settled:
   store logic is tested without a server and tests can inject a store.
   Discovery and the Valkey connection are lazy: `/health/live` needs
   neither.
+- **Proxy trust.** `BFF_TRUST_PROXY` mirrors Fastify's `trustProxy`: `false`
+  (default), `true` (every hop, so a client can forge `X-Forwarded-For`
+  and dodge per-IP rate limits and logs), a hop count, or a comma-separated
+  list of IPs/CIDRs. Behind a reverse proxy prefer a specific hop count or
+  the proxy's address range over `true`; with `false` all clients share the
+  proxy's address and one rate-limit bucket.
+- **Request targets.** One canonical `pathOf` (percent-decoded the way the
+  router decodes, no query or fragment) serves the CSRF guard, session
+  loading and logging. A target that does not start with exactly one `/`
+  (`//bff/x`, absolute-form) or has malformed escapes is guarded like
+  `/api` (fail closed).
+- **Roles keys.** Roles are built without a prototype; a client named
+  `realm` (the realm-roles key) or `__proto__` is ignored with a warning.
 - **Public origin.** `PUBLIC_ORIGIN`, never the `Host` header, derives
   `redirect_uri`, the Origin check and HSTS.
 - **CSRF.** `X-CSRF: 1` is required on every `/api/*` request and every
@@ -69,17 +82,30 @@ unstarted instance. These choices are settled:
   navigations, protected by the login transaction) and
   `POST /bff/backchannel-logout` (authenticated by its signed token).
 - **Refresh.** The BFF refreshes access tokens itself, under the
-  per-session lock so concurrent requests refresh once, which suits
-  refresh-token rotation. When the IdP rejects a refresh, the session is
-  destroyed and the answer is 401 (the SPA navigates to `/bff/login`). A
-  network failure keeps the session and answers 503.
-- **Logout.** `POST /bff/logout` destroys the session and returns
-  `{logoutUrl}` (`end_session_endpoint` with `id_token_hint` and
-  `post_logout_redirect_uri`). `POST /bff/backchannel-logout` implements
-  OIDC Back-Channel Logout 1.0: it verifies the logout token with `jose`
-  (`typ`, signature, `iss`, `aud`, `iat`/`exp`/`jti`, the event, `sid` or
-  `sub`, no `nonce`), rejects a replayed `jti`, and ends the sessions of the
-  `sid` (or of the `sub` when there is no `sid`).
+  per-session lock (30 s, longer than the IdP request timeout) so
+  concurrent requests refresh once, which suits refresh-token rotation. Only
+  an OAuth `invalid_grant` answer destroys the session and answers 401 (the
+  SPA navigates to `/bff/login`). Every other failure (another OAuth error
+  such as `invalid_client`, a 5xx, `server_error`, `temporarily_unavailable`,
+  a network or discovery failure) keeps the session and answers 503
+  `idp_unavailable`, so an IdP blip does not log users out. The refreshed
+  session is written with `SET ... XX PX` (`SessionStore.replace`): when a
+  logout or back-channel logout removed the session meanwhile, nothing is
+  written and the answer is 401, so a logout is never undone.
+- **Logout.** `POST /bff/logout` destroys the session, revokes the refresh
+  token at the IdP (RFC 7009) when discovery advertises
+  `revocation_endpoint`, and returns `{logoutUrl}` (`end_session_endpoint`
+  with `id_token_hint` and `post_logout_redirect_uri`). Revocation is best
+  effort: awaited for at most 2 s, a failure is logged as the
+  `token_revocation_failed` security event, and the logout is never blocked.
+  Back-channel logout does not revoke (the IdP started it and already ended
+  its session). `POST /bff/backchannel-logout` implements OIDC Back-Channel
+  Logout 1.0: it verifies the logout token with `jose` (`typ`, signature,
+  `iss`, `aud`, `iat`/`exp`/`jti`, the event, `sid` or `sub`, no `nonce`),
+  rejects a replayed `jti`, and ends the sessions of the `sid` (or of the
+  `sub` when there is no `sid`). It has a 16 KB body limit and deliberately
+  no rate limit: the IdP is the caller, throttling would drop real logouts,
+  and the signed token authenticates the request.
 - **Upstreams.** `BFF_UPSTREAMS` is an explicit allowlist validated with
   `zod` (RFC 10017 6.1.3.6). The session API for the proxy is
   `request.bffSession?.accessTokenFor(upstream)`. Per-upstream token
