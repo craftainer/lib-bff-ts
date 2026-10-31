@@ -7,8 +7,6 @@ export type KvOp =
       key: string;
       value: string;
       ttlMs: number;
-      /** SET ... XX: only when the key exists. */
-      onlyIfExists?: boolean;
     }
   | { op: "del"; key: string }
   /** Adds a member to a set and (re)sets the set's TTL. */
@@ -23,13 +21,12 @@ export type KvOp =
 export interface KvClient {
   get(key: string): Promise<string | null>;
   /**
-   * Returns false when `nx` is set and the key already exists, or when
-   * `onlyIfExists` (SET ... XX) is set and the key does not exist.
+   * Returns false only when `nx` is set and the key already exists.
    */
   set(
     key: string,
     value: string,
-    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
+    opts: { ttlMs: number; nx?: boolean },
   ): Promise<boolean>;
   /** Atomically reads and deletes a key. */
   getDel(key: string): Promise<string | null>;
@@ -39,12 +36,26 @@ export interface KvClient {
   pexpire(key: string, ttlMs: number): Promise<boolean>;
   smembers(key: string): Promise<string[]>;
   /**
-   * Applies every op in one atomic step (Valkey `MULTI`/`EXEC`; in memory,
-   * one synchronous tick): all of them take effect or none does. Returns one
-   * result per op: `set` a boolean (false when `onlyIfExists` and the key is
-   * missing), `del`, `sadd` and `srem` a count. Rejects when any op fails.
+   * Applies the ops as one unit of isolation (Valkey `MULTI`/`EXEC`; in
+   * memory, one synchronous tick): no other command runs in between. It is
+   * NOT a rollback: Valkey does not undo ops that fail at run time (for
+   * example `WRONGTYPE`), so a rejection can leave earlier ops applied and
+   * callers must clean up. Returns one result per op: `set` a boolean,
+   * `del`, `sadd` and `srem` a count. Rejects when any op fails.
    */
   multi(ops: KvOp[]): Promise<unknown[]>;
+  /**
+   * Compare-and-set: overwrites `key` with `value` (JSON, with the new
+   * version already inside) only when the JSON stored at `key` has
+   * `version === expectedVersion`. False when the key is missing or the
+   * version differs. Atomic (a Lua script in Valkey).
+   */
+  compareAndSetVersion(
+    key: string,
+    expectedVersion: number,
+    value: string,
+    ttlMs: number,
+  ): Promise<boolean>;
   /** Deletes the key only when it still holds `value` (lock release). Returns whether it deleted. */
   delIfEquals(key: string, value: string): Promise<boolean>;
   ping(): Promise<void>;
@@ -55,6 +66,14 @@ interface Entry {
   value: string | undefined;
   members: Set<string> | undefined;
   expiresAt: number | undefined;
+}
+
+function versionOf(json: string): unknown {
+  try {
+    return (JSON.parse(json) as { version?: unknown }).version;
+  } catch {
+    return undefined;
+  }
 }
 
 /** In-memory {@link KvClient} for tests and single-process use. Not shared between replicas. */
@@ -82,13 +101,10 @@ export class MemoryKv implements KvClient {
   #set(
     key: string,
     value: string,
-    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
+    opts: { ttlMs: number; nx?: boolean },
   ): boolean {
     const exists = this.#live(key) !== undefined;
-    if (
-      (opts.nx === true && exists) ||
-      (opts.onlyIfExists === true && !exists)
-    ) {
+    if (opts.nx === true && exists) {
       return false;
     }
     this.#entries.set(key, {
@@ -108,7 +124,7 @@ export class MemoryKv implements KvClient {
   set(
     key: string,
     value: string,
-    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
+    opts: { ttlMs: number; nx?: boolean },
   ): Promise<boolean> {
     return Promise.resolve(this.#set(key, value, opts));
   }
@@ -132,6 +148,19 @@ export class MemoryKv implements KvClient {
     }
     entry.expiresAt = this.#now() + ttlMs;
     return Promise.resolve(true);
+  }
+
+  compareAndSetVersion(
+    key: string,
+    expectedVersion: number,
+    value: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    const current = this.#live(key)?.value;
+    if (current === undefined || versionOf(current) !== expectedVersion) {
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(this.#set(key, value, { ttlMs }));
   }
 
   multi(ops: KvOp[]): Promise<unknown[]> {
@@ -185,6 +214,14 @@ export class MemoryKv implements KvClient {
   }
 }
 
+const CAS_VERSION_SCRIPT = `
+local current = redis.call("get", KEYS[1])
+if not current then return 0 end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= "table" or decoded.version ~= tonumber(ARGV[1]) then return 0 end
+redis.call("set", KEYS[1], ARGV[2], "PX", ARGV[3])
+return 1`;
+
 const RELEASE_LOCK_SCRIPT =
   'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end';
 
@@ -203,14 +240,12 @@ export class ValkeyKv implements KvClient {
   async set(
     key: string,
     value: string,
-    opts: { ttlMs: number; nx?: boolean; onlyIfExists?: boolean },
+    opts: { ttlMs: number; nx?: boolean },
   ): Promise<boolean> {
     const px = Math.max(1, Math.floor(opts.ttlMs));
     let reply: "OK" | null;
     if (opts.nx === true) {
       reply = await this.#client.set(key, value, "PX", px, "NX");
-    } else if (opts.onlyIfExists === true) {
-      reply = await this.#client.set(key, value, "PX", px, "XX");
     } else {
       reply = await this.#client.set(key, value, "PX", px);
     }
@@ -239,11 +274,7 @@ export class ValkeyKv implements KvClient {
       switch (op.op) {
         case "set": {
           const px = Math.max(1, Math.floor(op.ttlMs));
-          if (op.onlyIfExists === true) {
-            tx.set(op.key, op.value, "PX", px, "XX");
-          } else {
-            tx.set(op.key, op.value, "PX", px);
-          }
+          tx.set(op.key, op.value, "PX", px);
           queued += 1;
           break;
         }
@@ -279,6 +310,23 @@ export class ValkeyKv implements KvClient {
 
   smembers(key: string): Promise<string[]> {
     return this.#client.smembers(key);
+  }
+
+  async compareAndSetVersion(
+    key: string,
+    expectedVersion: number,
+    value: string,
+    ttlMs: number,
+  ): Promise<boolean> {
+    const reply = await this.#client.eval(
+      CAS_VERSION_SCRIPT,
+      1,
+      key,
+      expectedVersion,
+      value,
+      Math.max(1, Math.floor(ttlMs)),
+    );
+    return reply === 1;
   }
 
   async delIfEquals(key: string, value: string): Promise<boolean> {

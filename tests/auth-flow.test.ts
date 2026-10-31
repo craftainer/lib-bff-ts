@@ -309,6 +309,7 @@ describe("logout", () => {
         refreshToken: null,
         accessExpiresAt: Date.now() / 1000 + 600,
         createdAt: 0,
+        version: 0,
         absoluteExpiresAt: Date.now() / 1000 + 600,
       },
       600,

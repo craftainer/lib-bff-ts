@@ -18,6 +18,11 @@ export const LOGIN_COOKIE_NAME = "__Host-Http-login";
 const DISCOVERY_SUFFIX = "/.well-known/openid-configuration";
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+/** localhost, 127.0.0.0/8 and ::1. */
+function isLoopback(hostname: string): boolean {
+  return LOOPBACK_HOSTS.has(hostname) || /^127\.[0-9.]+$/.test(hostname);
+}
+
 /** One entry of `BFF_UPSTREAMS` (I4), mounted at `/api/<name>/*`. */
 export interface UpstreamConfig {
   /** Base URL of the upstream, without query or fragment. */
@@ -254,7 +259,10 @@ const envSchema = z.object({
   SESSION_ABSOLUTE_SECONDS: positiveInt(28800),
   SESSION_COOKIE_NAME: z
     .string()
-    .regex(/^[A-Za-z0-9_-]+$/, "must be a cookie token")
+    .regex(
+      /^__Host-[A-Za-z0-9_-]+$/,
+      "must be a cookie token starting with __Host- (ASVS 3.3.3)",
+    )
     .default("__Host-Http-session"),
   RATE_LIMIT_MAX: positiveInt(20, 100_000),
   RATE_LIMIT_WINDOW_SECONDS: positiveInt(60, 86_400),
@@ -458,13 +466,14 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
       `OIDC_TIMEOUT_SECONDS: must be below the ${REFRESH_LOCK_TTL_MS / 1000} s refresh lock TTL`,
     );
   }
+  // Whatever NODE_ENV says (it may be unset): tokens never cross a network in plaintext by default.
   if (
-    production &&
     /^(valkey|redis):/i.test(e.SESSION_STORE_URL) &&
+    !isLoopback(new URL(e.SESSION_STORE_URL).hostname) &&
     !e.SESSION_STORE_ALLOW_PLAINTEXT
   ) {
     issues.push(
-      "SESSION_STORE_URL: plaintext redis:// or valkey:// is refused when NODE_ENV=production (use rediss:// or valkeys://, or set SESSION_STORE_ALLOW_PLAINTEXT=true for localhost or a private sidecar)",
+      "SESSION_STORE_URL: plaintext redis:// or valkey:// to a non-loopback host is refused (use rediss:// or valkeys://, or set SESSION_STORE_ALLOW_PLAINTEXT=true for a sidecar on a private network)",
     );
   }
   if (e.SESSION_COOKIE_NAME === LOGIN_COOKIE_NAME) {

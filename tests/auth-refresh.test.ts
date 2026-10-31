@@ -156,6 +156,7 @@ describe("access token refresh", () => {
       refreshToken: "rt",
       accessExpiresAt: 0,
       createdAt: 0,
+      version: 0,
       absoluteExpiresAt: Date.now() / 1000 + 600,
     };
     await down.store.put("S".repeat(43), data, 600);
