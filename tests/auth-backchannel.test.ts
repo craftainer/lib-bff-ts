@@ -74,6 +74,11 @@ describe("back-channel logout", () => {
     expect(await bff.store.get(bob.id)).toBeDefined();
   });
 
+  it("accepts Keycloak's Logout typ", async () => {
+    const token = await idp.sign(claims({ sub: "bob" }), { typ: "Logout" });
+    expect((await post(token)).statusCode).toBe(200);
+  });
+
   it("rejects a replayed logout token", async () => {
     const token = await idp.sign(claims({ sub: "bob" }));
     expect((await post(token)).statusCode).toBe(200);
@@ -85,6 +90,9 @@ describe("back-channel logout", () => {
     const bad: Array<string | undefined> = [
       undefined,
       "not-a-jwt",
+      await idp.sign(claims(base), { typ: null }),
+      await idp.sign(claims(base), { typ: "JWT" }),
+      await idp.sign(claims(base), { typ: "id+jwt" }),
       await idp.sign(claims(base), { key: idp.otherKey }),
       await idp.sign(claims(base), { kid: "unknown-kid" }),
       await idp.sign(claims({ ...base, aud: "someone-else" })),

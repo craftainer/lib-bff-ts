@@ -1,4 +1,4 @@
-import { jwtVerify, type JWTVerifyGetKey } from "jose";
+import { decodeProtectedHeader, jwtVerify, type JWTVerifyGetKey } from "jose";
 import type { BffConfig } from "../config.ts";
 
 const EVENT = "http://schemas.openid.net/event/backchannel-logout";
@@ -14,16 +14,22 @@ export interface LogoutClaims {
 
 /**
  * Verifies an OIDC Back-Channel Logout 1.0 logout token (section 2.6): a
- * valid signature from the IdP's keys, `iss` equal to the configured issuer,
- * `aud` containing this client, `iat`/`exp`/`jti` present and `iat` recent,
- * the backchannel-logout event, a `sid` or `sub`, and no `nonce`. Rejects
- * with an error otherwise.
+ * `typ` of `logout+jwt` (or Keycloak's `Logout`), a valid signature from the
+ * IdP's keys, `iss` equal to the configured issuer, `aud` containing this
+ * client, `iat`/`exp`/`jti` present and `iat` recent, the backchannel-logout
+ * event, a `sid` or `sub`, and no `nonce`. Rejects with an error otherwise.
  */
 export async function verifyLogoutToken(
   token: string,
   config: BffConfig,
   keys: JWTVerifyGetKey,
 ): Promise<LogoutClaims> {
+  // The JOSE `typ` marks the JWT as a logout token, so an ID token cannot be replayed here
+  // (OIDC Back-Channel Logout 1.0 section 2.4; ASVS 10.5.5). Keycloak sends "Logout".
+  const typ = decodeProtectedHeader(token).typ?.toLowerCase();
+  if (typ !== "logout+jwt" && typ !== "logout") {
+    throw new Error("logout token has the wrong typ");
+  }
   const { payload } = await jwtVerify(token, keys, {
     issuer: config.oidc.issuer,
     audience: config.oidc.clientId,

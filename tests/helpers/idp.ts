@@ -14,7 +14,7 @@ export interface TestIdp {
   issuer: string;
   provider: Provider;
   /** Signs a logout token (or any JWT) with the IdP's real key unless another key is given. */
-  sign(payload: Record<string, unknown>, opts?: { key?: CryptoKey; kid?: string }): Promise<string>;
+  sign(payload: Record<string, unknown>, opts?: { key?: CryptoKey; kid?: string; typ?: string | null }): Promise<string>;
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
   close(): Promise<void>;
@@ -103,7 +103,11 @@ export async function startIdp(): Promise<TestIdp> {
     otherKey: other.privateKey,
     async sign(payload, opts = {}) {
       return new SignJWT(payload)
-        .setProtectedHeader({ alg: "RS256", kid: opts.kid ?? "test-key" })
+        .setProtectedHeader({
+          alg: "RS256",
+          kid: opts.kid ?? "test-key",
+          ...(opts.typ === null ? {} : { typ: opts.typ ?? "logout+jwt" }),
+        })
         .sign(opts.key ?? privateKey);
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),

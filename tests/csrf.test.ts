@@ -70,6 +70,15 @@ describe("Origin and Fetch Metadata", () => {
     }
   });
 
+  it("sends no CORS headers, not even for a preflight", async () => {
+    for (const res of [
+      await bff.app.inject({ method: "OPTIONS", url: "/bff/user", headers: { origin: "https://evil.example" } }),
+      await bff.app.inject({ method: "GET", url: "/bff/config", headers: { origin: PUBLIC_ORIGIN } }),
+    ]) {
+      expect(Object.keys(res.headers).filter((h) => h.startsWith("access-control-"))).toEqual([]);
+    }
+  });
+
   it("accepts the configured origin and requests without Origin", async () => {
     expect((await send("POST", "/bff/logout", { ...csrf, origin: PUBLIC_ORIGIN })).statusCode).toBe(401);
     expect((await send("POST", "/bff/logout", csrf)).statusCode).toBe(401);
