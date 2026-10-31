@@ -1,0 +1,17 @@
+# TEMPORARY ignores (user decision 2026-10-31, expire 2026-12-31).
+#
+# Both advisories come in transitively via @fastify/static 10.1.8 (glob ^13,
+# no 13.x fix; fixed in glob 14.0.2 / minimatch 11.0.1). Not reachable:
+# @fastify/static calls glob only with `wildcard: false`, using the fixed
+# pattern `**/**` and no AbortSignal, and patterns are never user-supplied.
+# Remove once @fastify/static ships glob >= 14.0.2.
+
+[[IgnoredVulns]]
+id = "GHSA-3g3m-2fjr-6pw4"
+ignoreUntil = 2026-12-31T00:00:00Z
+reason = "glob 13.0.6, transitive via @fastify/static 10.1.8 (glob ^13, no 13.x fix; fixed in glob 14.0.2). Not reachable: @fastify/static calls glob only with wildcard: false, using the fixed pattern **/** and no AbortSignal, and patterns are never user-supplied. Temporary user decision 2026-10-31; remove once @fastify/static ships glob >= 14.0.2."
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2026-12-31T00:00:00Z
+reason = "minimatch 10.2.6, transitive via glob 13 from @fastify/static 10.1.8 (no 13.x fix; fixed in minimatch 11.0.1). Not reachable: @fastify/static calls glob only with wildcard: false, using the fixed pattern **/** and no AbortSignal, and patterns are never user-supplied. Temporary user decision 2026-10-31; remove once @fastify/static ships glob >= 14.0.2."
