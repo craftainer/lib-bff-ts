@@ -4,7 +4,7 @@ import fp from "fastify-plugin";
 import * as client from "openid-client";
 import { z } from "zod";
 import { LOGIN_COOKIE_NAME, type BffConfig } from "../config.ts";
-import { securityLog } from "../log.ts";
+import { pathOf, securityLog } from "../log.ts";
 import {
   absoluteExpiry,
   applyTokens,
@@ -37,7 +37,7 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
   await app.register(rateLimit, {
     global: false,
     onExceeded: (request: FastifyRequest) => {
-      securityLog(request.log, "rate_limited", { path: request.url.split("?")[0] ?? "", ip: request.ip });
+      securityLog(request.log, "rate_limited", { path: pathOf(request.url), ip: request.ip });
     },
   });
 

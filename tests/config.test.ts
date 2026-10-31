@@ -216,6 +216,13 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, ANALYTICS_BACKEND: "umami", ANALYTICS_ENABLED: "false" })).not.toThrow();
   });
 
+  it("accepts a complete umami configuration", () => {
+    expect(
+      loadConfig({ ...base, ANALYTICS_BACKEND: "umami", ANALYTICS_ENDPOINT: "http://umami:3000", ANALYTICS_SITE_ID: "x" })
+        .analytics.backend,
+    ).toBe("umami");
+  });
+
   it("validates security.txt and the change-password URL", () => {
     expect(issues({ ...base, SECURITY_TXT_CONTACT: "http://insecure", SECURITY_TXT_EXPIRES: "tomorrow" })).toEqual([
       "SECURITY_TXT_CONTACT: each entry must be an https:, mailto: or tel: URI",

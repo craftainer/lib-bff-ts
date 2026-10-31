@@ -4,7 +4,7 @@ import fp from "fastify-plugin";
 import * as client from "openid-client";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { BffConfig } from "./config.ts";
-import { securityLog } from "./log.ts";
+import { pathOf, securityLog } from "./log.ts";
 import { createOidcClient, type OidcClient } from "./auth/oidc.ts";
 import {
   createValkeySessionStore,
@@ -202,7 +202,7 @@ function createSession(
 }
 
 function needsSession(url: string): boolean {
-  const path = url.split("?")[0] ?? "";
+  const path = pathOf(url);
   return path.startsWith("/bff/") || path === "/api" || path.startsWith("/api/");
 }
 
@@ -216,9 +216,7 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
       createValkeySessionStore(config.session.storeUrl, config.session.absoluteSeconds),
     );
   }
-  if (!app.hasDecorator("bffOidc")) {
-    app.decorate("bffOidc", createOidcClient(config));
-  }
+  app.decorate("bffOidc", createOidcClient(config));
   app.decorateRequest("bffSession", null);
 
   app.addHook("onClose", async () => {

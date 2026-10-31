@@ -22,5 +22,7 @@ export function safeReturnTo(raw: unknown, publicOrigin: string): string {
     return "/";
   }
   const url = new URL(raw, publicOrigin);
-  return url.origin === publicOrigin ? `${url.pathname}${url.search}` : "/";
+  const target = `${url.pathname}${url.search}`;
+  // Dot segments can collapse "/..//evil.example" into the protocol-relative "//evil.example".
+  return target.startsWith("//") ? "/" : target;
 }

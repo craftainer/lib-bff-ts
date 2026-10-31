@@ -44,9 +44,14 @@ export const REDACT_PATHS: string[] = [
   "headers.cookie",
 ];
 
+/** The path of a request URL, without its query string. */
+export function pathOf(url: string): string {
+  return url.split("?", 1)[0] as string;
+}
+
 /** A request serializer that drops the query string (it carries the authorization code and state). */
 export function serializeRequest(request: FastifyRequest): { method: string; url: string; remoteAddress: string } {
-  return { method: request.method, url: request.url.split("?")[0] ?? "", remoteAddress: request.ip };
+  return { method: request.method, url: pathOf(request.url), remoteAddress: request.ip };
 }
 
 /** The `logger` option as Fastify 5 accepts it (a logger instance goes in `loggerInstance`, not here). */
