@@ -13,7 +13,7 @@ import {
   sessionTtlSeconds,
   setSessionCookie,
 } from "../session.ts";
-import { verifyLogoutToken } from "./backchannel.ts";
+import { isTokenDefect, verifyLogoutToken } from "./backchannel.ts";
 import { revokeRefreshToken } from "./oidc.ts";
 import { profileOf } from "./claims.ts";
 import { extractRoles } from "./roles.ts";
@@ -286,7 +286,10 @@ const auth: FastifyPluginAsync<BffConfig> = async (app, config) => {
       try {
         logout = await verifyLogoutToken(body.data.logout_token, config, keys);
       } catch (error) {
-        return reject((error as Error).name);
+        // A bad token is final (400); failing to check one is retryable (503).
+        return isTokenDefect(error)
+          ? reject((error as Error).name)
+          : unavailable(request, reply, error);
       }
       if (!(await app.bffStore.claimOnce(`jti:${logout.jti}`, 600))) {
         return reject("logout token replayed");

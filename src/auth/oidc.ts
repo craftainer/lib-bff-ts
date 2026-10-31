@@ -51,7 +51,9 @@ export function createOidcClient(config: BffConfig): OidcClient {
     },
     async jwks(): Promise<JWTVerifyGetKey> {
       const metadata = (await this.configuration()).serverMetadata();
-      keys ??= createRemoteJWKSet(new URL(String(metadata.jwks_uri)));
+      keys ??= createRemoteJWKSet(new URL(String(metadata.jwks_uri)), {
+        timeoutDuration: config.oidc.timeoutSeconds * 1000,
+      });
       return keys;
     },
   };

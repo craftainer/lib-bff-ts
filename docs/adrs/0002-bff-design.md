@@ -154,8 +154,11 @@ unstarted instance. These choices are settled:
   crash between the claim and the end of the sessions keeps the token
   consumed for 10 minutes. That window is accepted: claiming after the
   destroy would let a replayed token log out a session created later. When
-  the IdP's discovery or key set is unreachable the answer is 503 (the IdP
-  retries), not 400. The route has a 16 KB body limit and deliberately no
+  the IdP's discovery or key set cannot be used (a timeout, a non-200
+  answer, a `kid` the cached set does not know yet after key rotation, or any
+  error class not known to be a token defect) the answer is 503 and the IdP
+  retries; only a bad token (jose `code` signature, claim, expiry, JWS/JWT
+  format or algorithm errors, or our own claim checks) is a permanent 400. The route has a 16 KB body limit and deliberately no
   rate limit: the IdP is the caller, throttling would drop real logouts, and
   the signed token authenticates the request.
 - **Upstreams.** `BFF_UPSTREAMS` is an explicit allowlist validated with

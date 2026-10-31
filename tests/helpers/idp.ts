@@ -30,6 +30,8 @@ export interface TestIdp {
   tokenDelayMs: number;
   /** When set, the token endpoint adds this `refresh_expires_in` to its responses. */
   refreshExpiresIn: number | undefined;
+  /** What `/jwks` does: stall for `delayMs`, and/or answer `status` instead of the key set. */
+  jwks: { delayMs: number; status: number | undefined };
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
   close(): Promise<void>;
@@ -126,6 +128,7 @@ export async function startIdp(
     revocationMs: 0,
     tokenMs: 0,
     refreshExpiresIn: undefined as number | undefined,
+    jwks: { delayMs: 0, status: undefined as number | undefined },
   };
   provider.use(async (ctx, next) => {
     if (ctx.path === "/token/revocation" && delays.revocationMs > 0) {
@@ -133,6 +136,18 @@ export async function startIdp(
     }
     if (ctx.path === "/token" && delays.tokenMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delays.tokenMs));
+    }
+    if (ctx.path === "/jwks") {
+      if (delays.jwks.delayMs > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, delays.jwks.delayMs),
+        );
+      }
+      if (delays.jwks.status !== undefined) {
+        ctx.status = delays.jwks.status;
+        ctx.body = { error: "jwks unavailable" };
+        return;
+      }
     }
     await next();
     if (
@@ -157,6 +172,7 @@ export async function startIdp(
     set revocationDelayMs(value: number) {
       delays.revocationMs = value;
     },
+    jwks: delays.jwks,
     get refreshExpiresIn() {
       return delays.refreshExpiresIn;
     },
