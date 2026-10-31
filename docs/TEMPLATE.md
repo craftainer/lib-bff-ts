@@ -1,0 +1,745 @@
+# Template conventions
+
+Everything about this repository's structure, tooling, and workflow that's
+identical across every instance of this template — as opposed to the root
+`README.md`'s short, instance-owned preface. See `../CLAUDE.md`'s "Keeping
+this file current" for where a new convention belongs.
+
+`template-base` ships the generic "devcontainer + CI + AI-assisted
+workflow" scaffold only — no application runtime, no backing services, no
+language assumed. It carries no `src/`/`tests/` of its own. An instance
+(a Python/Node.js/Rust/Go library, an infra-only repo, or a full
+application) adds its own language runtime, backing services, and release
+artifact on top of the shape described here.
+
+## Contents
+
+- `.devcontainer/` — the devcontainer setup; see its `README.md`. An
+  instance that needs backing services adds a `stack/` directory here,
+  following the "Devcontainer stack pattern" convention this template's
+  own instances (e.g. `template-fastapi`) already establish.
+- `.github/` — CI and release workflows; see its `CONTENTS.md`.
+- `.vscode/` — editor settings, tasks; see its `README.md`.
+- `.claude/` — Claude Code CLI project config; see its `README.md`.
+- `.mcp.json` — project-scope MCP servers not covered by a
+  `.claude/settings.json` plugin; see `.claude/README.md`.
+- `docs/` — knowledge about what the instance does; this file is the one
+  exception, documenting the template itself rather than product/domain
+  knowledge. `adrs/`, `frs/`, `nfrs/`, `plans/` ship only their own
+  `README.md` + `template.md` scaffolding — no numbered content, which is
+  entirely instance-owned.
+- `.secrets/` — local secret files, never committed; see its `README.md`.
+- `.devcontainer/Dockerfile` — a single `develop` stage (the devcontainer
+  image), with its build-context excludes in
+  `.devcontainer/Dockerfile.dockerignore`. The repo root has no
+  `Dockerfile`: that one name is reserved for an instance's own runtime
+  image (see "Instance extension points"), so a repo never has more than
+  one top-level Dockerfile.
+- `scripts/develop.sh`, `scripts/post-create.sh` — the `develop` stage's
+  setup script and the devcontainer's `postCreateCommand`, each running
+  an instance hook directory (`develop.d/`, `post-create.d/`); see
+  `scripts/README.md` and "Instance extension points" below.
+- `Makefile` — the release contract `release.yml` drives
+  (`build`/`sbom`/`release-assets`/`publish`/`release-check`); in this
+  template it builds, SBOMs, publishes and checks an npm tarball — see
+  "Release: a Makefile contract" and "Package template notes" below.
+- `.pre-commit-config.yaml` — git hooks, run by `prek` or `pre-commit`;
+  language-agnostic hooks only.
+- `CLAUDE.md` — the AI-assisted coding workflow Claude Code follows in
+  this repository; general conventions live in this file and each
+  directory's own `README.md` instead.
+
+## Instance extension points
+
+Base-owned files stay `replace` tier (a sync overwrites them) and expose
+hooks an instance fills with files it owns, so an instance never edits a
+base-owned file directly. Don't edit `.devcontainer/Dockerfile`, `scripts/develop.sh`
+or `compose.yml` in an instance; use the hooks below.
+
+| Hook | Base side (template-owned) | Instance side (instance-owned) |
+|---|---|---|
+| Extra devcontainer tooling | `.devcontainer/Dockerfile` `develop` stage runs every `scripts/develop.d/*.sh` after `develop.sh` | `scripts/develop.d/NN-name.sh` |
+| Extra post-create steps | `scripts/post-create.sh`, run by `devcontainer.json`'s `postCreateCommand`, runs every `scripts/post-create.d/*.sh` | `scripts/post-create.d/NN-name.sh` |
+| Extra compose services / dev-service settings | `devcontainer.json` `"dockerComposeFile": ["compose.yml", "compose.instance.yml"]` | `.devcontainer/compose.instance.yml` (base ships a stub, `ignore` tier) |
+| Instance skills and agents | base's manifest lists each of its own skills (`.claude/skills/<name>/`) and agents (`.claude/agents/<name>.md`) one by one under `replace`, not as a directory glob; a deleted base skill or agent keeps its line as a tombstone so sync removes it from instances. An instance's own name must not reuse a base or tombstoned one, since sync would overwrite or remove it | `.claude/skills/<name>/`, `.claude/agents/<name>.md`, listed in `.github/template-sync-manifest.local.yml`'s `ignore:` |
+| Runtime image | nothing (the devcontainer image lives in `.devcontainer/`) | top-level `Dockerfile` + `.dockerignore`, listed in `.github/template-sync-manifest.local.yml`'s `ignore:` |
+
+Files with no include mechanism of their own (JSON configs,
+`.pre-commit-config.yaml` — prek has no include) are `merge` tier, so an
+instance's additions survive a sync. The runtime image is the
+top-level `Dockerfile` with a plain `.dockerignore`, both instance-owned:
+base keeps the devcontainer image and its excludes under
+`.devcontainer/`, where BuildKit picks up
+`.devcontainer/Dockerfile.dockerignore` for that build automatically.
+
+**One-time upgrade (instances synced from before this layout).** A sync
+adds `.devcontainer/Dockerfile` but can't delete the old top-level
+`Dockerfile`/`.dockerignore`: from this release on, base's manifest no
+longer classifies those paths, and a merge-tier file is never deleted
+automatically. In the sync PR, by hand:
+
+- With a runtime image: rename `app.Dockerfile` → `Dockerfile` and
+  `app.Dockerfile.dockerignore` → `.dockerignore`, overwriting the old
+  base files. Update every reference (`-f app.Dockerfile` in the
+  `Makefile`, `dockerfile:` in compose files, CI, docs) and list both
+  paths under `ignore:` in `.github/template-sync-manifest.local.yml`.
+- Without one: delete the old top-level `Dockerfile` and `.dockerignore`.
+
+## Getting started
+
+1. Open this folder in a devcontainer (VS Code: "Reopen in Container" —
+   `.vscode/extensions.json` recommends the extension that offers this —
+   or any tool that reads `.devcontainer/devcontainer.json`). This builds
+   the `develop` stage and installs the git hooks via `postCreateCommand`
+   (`scripts/post-create.sh`).
+2. There's nothing to run yet — `template-base` ships no application. An
+   instance documents its own "run the app" / "run the CLI" step here.
+
+Without a devcontainer: install [`prek`](https://prek.j178.dev/) and run
+`prek install` once to enable the git hooks; install whatever else your
+instance's own toolchain needs.
+
+## Checks
+
+`.pre-commit-config.yaml` defines whitespace/EOF fixers, YAML/TOML/JSON
+checks, `conventional-pre-commit` (Conventional Commits, enforced at the
+`commit-msg` stage), the `template-sync-manifest` completeness check, and
+the `devcontainer-lock` lockfile-consistency check, and three security
+scanners (below). An instance layers
+its own language-specific hooks on top (lint,
+format, type check, test suite, dependency-vulnerability scan, ...),
+matching the shape `template-fastapi`'s own `.pre-commit-config.yaml`
+already establishes for `ruff`/`mypy`/`pytest`/`pip-audit`.
+
+### Security scanners
+
+| Hook | Scans | Stage | Network | OWASP (2025) |
+|---|---|---|---|---|
+| `zizmor` | `.github/workflows/*.yml`: template injection, excessive permissions, unpinned or tag-pinned Actions, persisted credentials | `pre-commit`, `manual` | offline locally; online in CI | A01, A03, A08 |
+| `gitleaks` | staged changes on commit; `gitleaks-history` (manual stage) scans the full git history | `pre-commit`; `manual` | none | A04 |
+| `osv-scanner` | supported lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `uv.lock`, `poetry.lock`, `pdm.lock`, `Pipfile.lock`, `pylock.toml`, `Cargo.lock`, `requirements*.txt`) against osv.dev | `manual` | online | A03 |
+
+- **Online/offline.** Locally `zizmor` has no token and runs its offline
+  audits only. `checks.yml` passes `GH_TOKEN: ${{ github.token }}` into
+  the devcontainer (the job's `contents: read` is all zizmor's docs ask
+  for), which enables the online audits (for example, checking an
+  Action's pinned SHA against the upstream repository). `osv-scanner`
+  always needs the network.
+- **No lockfile, no run.** `osv-scanner` carries `always_run: false`
+  and a `files:` regex of the lockfiles above, so a repo without one
+  (this template) skips it instead of failing with exit 128 ("no
+  packages found"). An instance that adds a lockfile gets the scan
+  with no further change; one using another lockfile format extends
+  the regex in its `.pre-commit-config.yaml`.
+- **Pinning.** Every `uses:` in `.github/workflows/` is pinned to a full
+  commit SHA with a `# vX.Y.Z` comment; Renovate
+  (`helpers:pinGitHubActionDigests`) keeps both current. Hook `rev:`s
+  stay tags: Renovate's `pre-commit` manager updates them, but cannot
+  turn a tag into a frozen SHA (the update fails).
+- **gitleaks allowlist.** Config is `.gitleaks.toml` (`[extend]
+  useDefault = true`). To allow a reviewed false positive, add a
+  narrowly scoped entry (a `paths` and/or `regexes` match, never a whole
+  rule or directory) with a `description` saying why it is safe:
+
+  ```toml
+  [[allowlists]]
+  description = "Dummy token in the parser's test fixture"
+  paths = ['^tests/fixtures/sample_token\.txt$']
+  regexes = ['ghp_EXAMPLEEXAMPLEEXAMPLE']
+  condition = "AND"
+  ```
+
+  A real secret found in history is rotated first; allowlisting it is
+  never the fix.
+- **Ignoring a vulnerability.** Create `osv-scanner.toml` next to the
+  lockfile (or at the repo root) with a reason and an expiry, so an
+  ignore can't outlive its justification:
+
+  ```toml
+  [[IgnoredVulns]]
+  id = "GHSA-xxxx-xxxx-xxxx"
+  effectiveUntil = 2027-01-31
+  reason = "Not reachable: we never call the affected parser"
+  ```
+
+- **zizmor findings** are fixed at the root (move `${{ }}` expressions
+  into `env:`, scope `permissions:` per job, set
+  `persist-credentials: false`, replace `issue_comment`/`workflow_run`
+  triggers with a label trigger and in-workflow jobs). Don't suppress an
+  audit to get green.
+
+Run everything at once with:
+
+```bash
+prek run --all-files --hook-stage manual
+```
+
+Every hook except the commit-message check carries the `manual` stage,
+so the command above runs everything else regardless of which git hook
+would normally trigger it. Commit messages can only be checked by
+actually committing (see the comment in `.pre-commit-config.yaml`).
+
+CI (`.github/workflows/checks.yml`) runs the same `--hook-stage manual`
+command, inside the devcontainer itself, on every push and pull request
+— as an `amd64`/`arm64` matrix, both legs native (no QEMU).
+`.github/workflows/release.yml` is triggered manually to cut an
+alpha/beta/rc/full release — see "Release: a Makefile contract" below and
+`.github/workflows/README.md`.
+
+## Release: a Makefile contract
+
+`release.yml` computes the next SemVer tag (`compute_next_version.py`,
+unchanged across every instance), then drives these targets:
+
+| Target | Runs | Where | Env available |
+|---|---|---|---|
+| `release-arches` | once, first | host runner | none; must print a JSON array on stdout, e.g. `["amd64"]` |
+| `build`, `sbom`, `release-assets`, `publish` | once **per arch**, in that order | host runner for that arch | `RELEASE_VERSION`, `RELEASE_TAG`, `RELEASE_ARCH`, `OCI_REGISTRY`, `OCI_IMAGE_NAME`, `OCI_REGISTRY_USERNAME`, `OCI_REGISTRY_PASSWORD`, all `GITHUB_*` (`GITHUB_TOKEN` has `packages: write`); no package-registry variables or secrets, and no OIDC token |
+| `release-check` | once, after all arches; gates the GitHub release and `publish-packages` (not the per-arch image `publish`, which already ran in `build`) | **inside the devcontainer** (`devcontainers/ci`), stack up | `RELEASE_VERSION`, `RELEASE_TAG`, `GITHUB_REPOSITORY`; **not** `RELEASE_ARCH` (it runs once, not per arch) and no `ARCHES`: to check each arch's files in `dist/`, iterate over `make -s release-arches` |
+| `finalize` | once, after `release-check`; then the GitHub release is created | host runner | same as per-arch minus `RELEASE_ARCH` (`GITHUB_TOKEN` also has `packages: write`) |
+| `publish-packages` | once, after the GitHub release exists, **only if** `PYPI_PUBLISH`, `NPM_PUBLISH` or `CARGO_PUBLISH` is set | host runner (own job, with `id-token: write`) | `RELEASE_VERSION`, `RELEASE_TAG`, `PYPI_PUBLISH`, `NPM_PUBLISH`, `CARGO_PUBLISH`, all `GITHUB_*`, the OIDC token, `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` (bootstrap secrets; empty when unset, so treat empty as absent); `dist/` holds every arch leg's files |
+| `verify-published` | once, after `publish-packages` succeeded, **only if** a `*_PUBLISH` variable is set | host runner (own job, no secrets, no OIDC token) | `RELEASE_VERSION`, `RELEASE_TAG`, `PYPI_PUBLISH`, `NPM_PUBLISH`, `CARGO_PUBLISH`; `dist/` as for `publish-packages` |
+
+What each target is for: `build` produces the release artifact(s) (an
+image, `cargo build --release`, `npm pack`, `helm package`, ...); `sbom`
+writes an SBOM for what `build` produced; `release-assets` populates
+`dist/` (gitignored) with every file to attach to the GitHub release;
+`publish` pushes the per-arch image to its registry, skipping cleanly when
+`OCI_REGISTRY` isn't set; `publish-packages` uploads packages (PyPI, npm,
+crates.io) once per release, never once per arch, and runs in a job that
+exists only for instances that set one of the `*_PUBLISH` variables, so
+an image-only instance never has `id-token: write` or a package secret
+(base's default fails if any `*_PUBLISH` variable is set, so an instance
+can't silently skip it; with none set it is a no-op; it runs on a fresh runner with a checkout and the
+downloaded `dist/` only, so it uploads from `dist/` and sets up its own
+tooling); `verify-published` checks the release from the registry (e.g.
+installs the just-published package) and is a no-op in base's default, since
+there is nothing to verify unless an instance implements it;
+`release-check` runs checks that need the backing services (e.g. tests
+producing a coverage report) and the local artifact; `finalize`
+does cross-arch work such as combining per-arch registry tags into one
+multi-arch manifest list. `RELEASE_VERSION` (e.g. `1.2.3` or
+`1.2.3-alpha.1`) and `RELEASE_TAG` (the same, `v`-prefixed) are for
+embedding or tagging with the version. A single-arch no-op is the
+default: `release-arches` prints `["amd64"]`.
+
+**Registry credentials for `publish` and `finalize`.** The per-arch job's
+and the `release` job's `GITHUB_TOKEN` have `packages: write`, so an
+instance's `publish` and `finalize` (e.g. a multi-arch manifest list) may
+push to the repository's own GHCR packages (`ghcr.io/<owner>/<repo>...`) without
+`OCI_REGISTRY_USERNAME`/`OCI_REGISTRY_PASSWORD`: log in with username
+`GITHUB_ACTOR` and password `GITHUB_TOKEN`. A package that the workflow
+creates inherits the repository's permissions. A package that already
+exists and isn't linked to the repository first needs the repository added
+under the package's "Manage Actions access" settings, with write access.
+The explicit secrets remain the way to reach any other registry, or a
+package outside that repository's reach, and an instance that sets them
+should prefer them. Base's own `publish` and `finalize` are no-ops and log
+in nowhere, so each instance implements this fallback in its own
+`Makefile`. Trade-off: the token is in the job env, so every per-arch
+target (`build`, `sbom`, `release-assets`), not only `publish`, can write
+those packages.
+
+**Upgrading a package instance.** Before this contract, `publish` also
+uploaded packages, once per arch. Now `publish` is image-only and gets no
+`*_PUBLISH` variables, secrets or OIDC token. An instance that publishes
+packages must move that upload from `publish` into a new
+`publish-packages` target (reading artifacts from `dist/`, setting up its
+own tooling). Until it does, base's default `publish-packages` (if the
+instance kept it) fails with a message naming the variable that is set;
+an instance whose Makefile has no such target fails with `make: No rule
+to make target`. Either way nothing is uploaded, and because the GitHub
+release is created first (see "Job order"), the release already exists
+when the `publish-packages` job fails: it is out without its packages.
+Fix the Makefile and re-run the failed jobs to publish them; do not cut
+another release for it.
+
+**Job order.** `build` (per arch) → `release-check` → `release`
+(`finalize`, then the GitHub release) → `publish-packages` →
+`verify-published`. `release-check` gates both the release and package publishing. It does
+not gate the per-arch image `publish`, which runs inside `build`, so a pushed
+per-arch image can exist for a release that `release-check` then fails.
+The GitHub release exists before any registry upload, so a partial
+registry failure leaves the release in place and a re-run of the failed
+job finishes publishing. So an instance's `publish-packages` **must be
+safe to run again**: it skips versions already on the registry (for
+example `uv publish --check-url`, or an `npm view` guard) instead of failing
+on them or double-publishing.
+
+The `release` job is re-runnable too: if the release already exists it
+skips `finalize` and the release creation (a leftover draft is deleted and
+recreated), so re-running failed jobs after a later job failed does not
+fail on the existing release. It first checks that the existing
+release's tag points at the commit this run built, and fails (rather than
+warns) if the tag can't be resolved or points elsewhere
+(`.github/scripts/verify_release_tag.sh`). The tag lookup is tried up to six
+times over about two minutes (waits of 5, 10, 20, 40 and 60 seconds, enough
+for a minute-long secondary rate limit), but only for a transient failure
+(HTTP 5xx, 408 or 429, a rate limit, or a network error). A tag that does not
+resolve (the API answers 404, or 422 "No commit found") or any other permanent
+error fails at once. The 404 message names both causes: for a deleted tag,
+restore it or delete the release and run the workflow again; for a release
+that was only just created (say by a concurrent run) whose tag is not visible
+yet, re-run the job. An API answer without a commit sha is reported as such,
+not as an unresolvable tag. If `release` itself failed before the release
+existed, `finalize` runs again on the re-run, so an instance's `finalize`
+must be safe to repeat (it must not double-apply its side effects).
+Because the release is created before `publish-packages` runs, a GitHub
+release can exist for a version whose `publish-packages` failed. Re-run the
+failed jobs to finish publishing; do not delete the release.
+`verify-published` runs only after `publish-packages` succeeded, so after a
+partial `publish-packages` failure nothing is verified until the re-run of
+the failed jobs, which then runs it.
+
+Two runs for the same tag cannot overlap in the `release` job: it sits in a
+`concurrency` group named after the tag (`cancel-in-progress: false`), so the
+second waits and then sees the published release. If that release was cut
+from a different commit than the waiting run's (two dispatches that computed
+the same tag), the waiting run fails instead of publishing its own `dist/`
+under that version (detected only here, after the per-arch images of both runs were
+pushed). GitHub keeps at most one waiting run per group, and a
+newer waiting run replaces it.
+
+A release that exists on GitHub counts as complete: whatever failed after it
+is finished by re-running the failed jobs, never by cutting another version.
+
+**Opting into a registry.** The `PYPI_PUBLISH` (`testpypi` or `pypi`),
+`NPM_PUBLISH` and `CARGO_PUBLISH` repository variables are what opt an
+instance into a registry; with none set, `publish-packages` and
+`verify-published` do not run. `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` are
+only for the first release of a package, before trusted publishing is set up
+at the registry. See `.github/workflows/README.md`,
+"Release variables and secrets".
+
+Re-run only the *failed jobs* of a run. "Re-run all jobs" runs `version`
+again, which sees the tag the first attempt created and computes the next
+version, so it cuts another release instead of finishing the first.
+
+In `release-check`, if `dist/` holds files owned by another user (the
+devcontainer ran as root), the job takes them over with `sudo`, which must
+be passwordless (`sudo -n`); the runner images provide that. A self-hosted
+runner without it fails there with a message saying so.
+
+Package templates (npm, Python, Rust) move their
+registry check ("install what was just published") from `release-check` to
+`verify-published`; their `publish-packages` is unchanged and already skips
+versions already on the registry. Base's
+`release-check` no longer receives the `*_PUBLISH` variables.
+
+*In this template (npm).* The registry check lives in
+`scripts/release-verify-published.sh` (`make verify-published`, run through
+`release-run.sh` on the bare runner, no secrets); `release-check` installs
+the local tarball only. An instance created from this template gets both
+with the sync (`Makefile` and `scripts/release-*.sh` are template-owned); one
+that overrode `release-check` locally moves its registry install into
+`verify-published`.
+
+**Package instance checklist.** An instance that publishes a package also:
+sets `repository`, homepage and bugs URLs in its package manifest
+(`package.json`, `pyproject.toml`, `Cargo.toml`) -- npm provenance
+verifies the repository URL against the publishing repository, and the
+other registries show these links to users; and implements `publish-packages`
+(re-runnable: it skips versions already on the registry) in its own `Makefile`, which replaces base's default (the
+`DefaultPublishPackagesTest` in `.github/scripts` skips itself once the
+default message is gone). That only works where the `Makefile` is
+instance-owned, as in base. A downstream template that makes the `Makefile`
+replace-tier (an image template, say) gives its instances no place to
+implement it, so such a template either ships the `publish-packages` logic
+itself, driven by variables the instance sets, or is not a fit for package
+instances. `release-check` receives
+`GITHUB_REPOSITORY`, so an instance can run repository guards there.
+It also moves any "install what was just published" check from
+`release-check` to `verify-published` (see "Job order" above).
+
+`dist/` rules: each arch leg's `dist/` is uploaded as artifact
+`release-assets-<arch>` (a tarball, so it is never empty), and
+`release-check`'s job assembles all of them into one `dist/`, failing if an
+arch's upload is missing or two legs produced the same file name, so
+**per-arch file names must include the arch**. `release-check` may add
+more files to `dist/`, and the assembled `dist/` (uploaded at the end of the
+`release-check` job, before `finalize`) is what `release`,
+`publish-packages` and `verify-published` start from. `finalize` may add
+more files, but they are attached to the GitHub release only:
+`publish-packages` and `verify-published` do not see them. A path that two
+legs both produce (the same file name, a file in one and a directory of
+that name in another, or a symlink) fails the assembly. The assembly also
+refuses to run when `dist/` already exists and is not empty, so stray files
+cannot end up in a release.
+`release.yml` then runs `gh release create` with every file left in
+`dist/`.
+
+The arch legs run natively, not under QEMU: `arm64` on `ubuntu-24.04-arm`,
+`amd64` on `ubuntu-24.04`, each overridable with the `CI_RUNNER_ARM64` /
+`CI_RUNNER_AMD64` repository/organization variables.
+
+This repo's own `Makefile` implements every target as a documented
+no-op, since `template-base` ships no artifact — it's both a working
+example of the contract's shape and what `release.yml` needs to run
+cleanly if this repo itself is ever released. An instance's `Makefile` is
+not template-owned (it's the whole point that it differs per artifact
+type), so it's tracked like any other instance-owned file — untouched by
+this template's own sync manifest.
+
+## Template sync
+
+Once instantiated, a repo created from this template can pull in later
+template fixes/improvements via `.github/workflows/template-sync.yml`
+(itself template-owned, `replace`-tier): on a schedule (cadence set by
+the `TEMPLATE_SYNC_INTERVAL` repository variable, `weekly` or `monthly`)
+or on demand, it diffs the instance against the template's latest tagged
+release, per `.github/template-sync-manifest.yml`'s three tiers
+(`replace`, `ignore`, `merge` — see that file's header), and opens a PR
+with the result. It never pushes directly or auto-merges; a genuine
+`merge`-tier conflict is left with `<<<<<<<` markers for a human to
+resolve. An instance that predates this workflow bootstraps its
+`.github/template-sync-state.json` via the workflow's manual
+`initial_sync_tag`/`template_repo` inputs first.
+
+The workflow runs `template_sync.py apply` from the *new* tag's checkout,
+with that tag's manifest. Do the same when applying a sync by hand: the
+instance's own copy of the script is the old release's, and an older one
+does not expand glob entries such as `scripts/release-*.sh`, so it skips
+those files (a second run with the new script then picks them up). `apply`
+is meant to run once per tag pair: the state file moves to the new tag
+afterwards. Running it again is harmless for files already merged cleanly,
+but it merges a hand-resolved conflict again and re-creates its markers.
+
+Further sync behaviour, detailed in `.github/scripts/README.md`:
+
+- `apply` is not atomic. CI discards the checkout and does not advance the
+  state on an error; after a failed manual run, reset the working tree with
+  git before trying again.
+- A binary `merge`-tier file the instance changed cannot be merged. It is
+  kept as it is, reported as a conflict, listed as `merge.binary` in the
+  summary and labelled in the sync PR.
+- The moderation `apply` jobs download the `moderation-result` artifact
+  strictly, so a lost artifact fails the job instead of passing silently
+  (see `.github/workflows/README.md`, "Issue moderation").
+- The scripts under `.github/scripts/` run on the runner's system `python3`.
+  Base ships `.github/scripts/ruff.toml` (`replace` tier), pinned to that
+  Python's `target-version`, and `test_script_syntax.py` guards it with
+  `ast.parse(feature_version=...)`. A Python instance must not override or
+  remove it: its own `pyproject.toml` targets a newer Python and ruff would
+  rewrite those scripts into syntax the runner cannot parse.
+
+An instance that isn't itself a template shouldn't edit that manifest to
+list its own files (`src/`, say): it's `merge`-tier, so edits would
+conflict with later syncs. It lists them under an `ignore:` key in the
+instance-owned
+`.github/template-sync-manifest.local.yml` instead; the
+`template-sync-manifest` check merges that file in, but sync never reads
+it, and it accepts no other tier.
+
+A repo can itself be both an instance of `template-base` *and* its own
+template for further instances (e.g. `template-fastapi`): its own
+`.github/template-sync-manifest.yml` classifies its *own* tracked files
+for *its* downstream instances, entirely separate from this template's
+manifest (it edits the manifest directly and resolves base's additions by
+hand) — see that repo's own docs for the two-hop chain this produces.
+
+## Template family
+
+`template-base` is the root of a small family. Four mid-layer templates sit
+under it, and each library or app is an instance of exactly one of them (the
+three app templates through `template-docker`):
+
+```text
+template-base
+├── template-python-package ── lib-crud-py, lib-observability-py, lib-crud-sdk-py
+├── template-npm-package ───── lib-crud-sdk-ts, lib-crud-views-ts
+├── template-rust-crate ────── lib-crud-rs, lib-observability-rs
+└── template-docker
+    ├── template-fastapi
+    ├── template-axum
+    └── template-react
+```
+
+Naming: a library repo is `lib-<name>-<py|ts|rs>` and an app repo is
+`template-<runtime>`; the registry package is `craftainer-<name>` on PyPI and
+crates.io and `@craftainer/<name>` on npm (`lib-crud-sdk-ts` publishes
+`@craftainer/crud-sdk`). Libraries declare `GPL-3.0-only` in their package
+manifest; base itself ships the GPL v3 text in `LICENSE`.
+
+Each mid-layer template is an instance of base that is itself a template. It
+adds one kind of artifact to base's release contract and keeps everything
+else from base:
+
+| Template | Adds to base | Tooling it owns (`replace`) | What an instance owns (`ignore`) |
+|---|---|---|---|
+| `template-docker` | the container-image release: multi-arch build, SBOM, OCI labels, smoke test, Trivy scan, Dockerfile version check, and `publish-packages`/`verify-published` as no-ops | `Makefile`, `scripts/image-*.sh`, `scripts/runner-setup.sh`, `scripts/check-dockerfile-versions.sh`, `scripts/skopeo.sh` | `Dockerfile`, `image.mk`, `scripts/runner-setup.d/*.sh` |
+| `template-python-package` | a pure-Python library on PyPI (trusted publishing) | `Makefile`, `scripts/release-*.sh`, `scripts/post-create.d/10-uv-sync.sh`, `codspeed.yml` | `pyproject.toml`, `uv.lock`, `src/`, `tests/` |
+| `template-npm-package` | an ESM TypeScript package on npm (staged first publish, then trusted publishing) | `scripts/release-*.sh`, `scripts/develop.d/10-corepack.sh`, `scripts/post-create.d/10-pnpm-install.sh` | `package.json`, `tsconfig*.json`, `tsdown.config.ts`, `vitest.config.ts`, `src/`, `tests/`, `pnpm-lock.yaml`, and the `Makefile` (a thin caller of the scripts) |
+| `template-rust-crate` | a library crate on crates.io (trusted publishing, bootstrap-token fallback) | `Makefile`, `scripts/release-*`, `rust-toolchain.toml`, `rustfmt.toml`, the rustup and `cargo fetch` hooks | `Cargo.toml`, `Cargo.lock`, `src/`, `tests/`, `deny.toml` |
+
+Each template's own `docs/TEMPLATE.md` has the details and the exact
+manifest; its `docs/adrs/0001-*.md` records why it exists. The three app
+templates inherit the image layer from `template-docker`; they are still
+the place for their own runtime (FastAPI, axum, React) and their own ADRs.
+
+**Sync tiers across the family.** Every hop uses the same three tiers
+(`replace`, `ignore`, `merge`; see "Template sync" and the manifest header).
+A mid-layer classifies its own tree for its instances in its own
+`.github/template-sync-manifest.yml`, which is `merge` tier in every
+instance: base's additions are resolved by hand there.
+An instance lists extra paths of its own under `ignore:` in
+`.github/template-sync-manifest.local.yml`. Which template an instance
+follows is recorded in its `.github/template-sync-state.json`
+(`template_repo`, `synced_tag`). An instance follows its immediate parent: a
+package or image instance its mid-layer, and the mid-layer follows base.
+
+**Order of a change.** A sync reads the parent's latest tagged release, so a
+change travels one released tag at a time:
+
+1. Fix it in `template-base`, merge, and release a new tag.
+2. Each mid-layer takes the base release through a sync PR, merges it and
+   releases its own tag. A base fix reaches `template-docker` and the
+   three package templates this way; the app templates take it from
+   `template-docker` in step 3, after it has released.
+3. Every instance takes its parent's tag through its own sync PR (the app
+   templates take `template-docker`'s; the libraries, their package
+   template's).
+
+A fix to a mid-layer's own files starts at step 2 and skips base. A change to
+the release contract itself (a new target, a changed job order) is a minor
+release of base, and each mid-layer then adapts its own implementation of the
+target before instances re-sync; the "Job order" above is the current
+result of two such changes. Instances that publish packages follow the
+registry's own ordering on top: a package that depends on another is
+released after it.
+
+## Versions and config
+
+Every version and config value is defined in exactly one place; nothing
+duplicates or re-pins it elsewhere. Everything pinned here (base image,
+Actions, hook revisions, `prek`/Claude Code CLI/`snip`/`gh`/`uv`/Python/
+Node.js versions) is pinned once, at its single point of use, to an exact
+patch version — never a floating range or `latest` — so Renovate can
+bump them one at a time and the diff shows exactly what changed. An
+instance's own language runtime/package versions follow the same rule in
+its own Dockerfile/manifest.
+
+`python3` and Node.js, both installed by `scripts/develop.sh` and pinned
+via `.devcontainer/Dockerfile`'s `PYTHON_VERSION`/`NODE_VERSION` ARGs, are
+infrastructure tooling only — not an application runtime this template
+assumes. `python3` exists because `prek` needs an interpreter to build
+the venv for any `language: python` hook (`.pre-commit-config.yaml`'s
+`pre-commit-hooks` repo) and because `.github/scripts/*.py` need one
+directly; `uv` (its own `UV_VERSION` ARG) is only the mechanism used to
+install that exact, checksum-verified CPython build rather than an
+unpinned apt package, and stays on `PATH` afterward. Node.js exists
+because `npx` (the `clear-thought` MCP server in `.mcp.json`) needs it.
+An instance that adds Python or Node.js as its own application runtime
+can reuse these directly rather than installing a second copy.
+
+## Package template notes
+
+`template-npm-package` extends `template-base` for an ESM TypeScript npm
+package. The sections above still apply, except where noted; these are the
+package-specific additions. `../docs/adrs/0001-npm-package-template.md`
+records why.
+
+- **Package scaffold (instance-owned, `ignore` tier).** `package.json`,
+  `tsconfig*.json`, `tsdown.config.ts`, `vitest.config.ts`, `src/`,
+  `tests/` and `pnpm-lock.yaml`. A package renames `name` to
+  `@craftainer/<name>` (npm's org-scope convention; the template's own
+  unscoped name is a placeholder), owns its dependencies, entry points, code
+  and tests, and regenerates the lockfile with `pnpm install`. Tool
+  *versions* are kept fresh by Renovate, not by sync. Because it is
+  instance-owned, a package must also point `repository.url`
+  (`git+https://github.com/<owner>/<repo>.git`), `homepage` and `bugs.url`
+  at its own repository: the template ships its own values, which a copy
+  inherits, and `make publish-packages` fails on a `repository.url` that is not
+  `https://github.com/$GITHUB_REPOSITORY`.
+- **Instance setup checklist (npm).** Before the first release: (1) rename
+  `name`, and set `repository`, `homepage` and `bugs` in `package.json` as
+  above; (2) set the `NPM_PUBLISH` repository variable (any non-empty
+  value) — unset, `make publish-packages` only prints a `::warning::` that nothing
+  was published; (3) for the stage-only bootstrap, add the `NPM_TOKEN`
+  secret (organization or repository; a granular token, "Read and write
+  (stage only)"), run the release, approve the stage, configure the trusted
+  publisher on npmjs.com and delete `NPM_TOKEN` (see `publish-packages` below).
+- **Template-owned tooling (`replace` tier).** `scripts/release-*.sh` (the
+  release logic below), `scripts/develop.d/10-corepack.sh` (enables pnpm
+  through Corepack, which reads `packageManager`) and
+  `scripts/post-create.d/10-pnpm-install.sh` (`pnpm install
+  --frozen-lockfile`). Don't edit them in a package; change them here and
+  release a new tag. This also supersedes base's "hook directories ship
+  empty" wording: these two hooks ship here, and a package lists its own
+  extra hook scripts under `ignore:` in
+  `.github/template-sync-manifest.local.yml`. The `Makefile` stays `ignore`
+  (a thin caller of those scripts) and is instance-owned.
+- **Checks and their order.** `prek run --all-files --hook-stage manual`
+  runs oxlint, `prettier --check`, `tsc --noEmit`, `vitest` with the 100%
+  coverage gate, then `tsdown`, `publint --strict` and `attw --pack .
+  --profile esm-only`, then the lockfile check. The build must come before
+  publint and attw: they inspect the built `dist/`, and prek runs hooks in
+  file order. Every hook calls `pnpm run <script>`, so `package.json` is the single source
+  of both the tool versions and their flags.
+- **`exports` and `entry` move together.** The `exports` map in
+  `package.json` is hand-written and `tsdown.config.ts`'s `entry` is the
+  list of files it points to; add or remove a subpath in both, and publint
+  and attw fail when they disagree. `isolatedDeclarations` is on, so every
+  public export needs an explicit type annotation (the declaration emit
+  does not infer).
+- **Node lives in two places.** `.devcontainer/Dockerfile`'s `NODE_VERSION`
+  (the toolchain) and `package.json`'s `engines.node` (what consumers need).
+  Change them together. The release scripts read the Dockerfile's value to
+  pick the Node image when the host runner has no pnpm.
+- **Release.** See below.
+
+### Release
+
+One pure-JS tarball, built once (`release-arches` prints `["amd64"]`). As in
+`template-python-package`, the version lives only in the git tag:
+`package.json` stays at `0.0.0` and `make build` stamps `RELEASE_VERSION`
+into the build (restored on exit, never committed).
+
+| Target | What it does |
+|---|---|
+| `build` | `pnpm install --frozen-lockfile`, stamp the version, `pnpm build`, `npm pack`; leaves only `<name>-<version>.tgz` in `dist/` (which `release.yml` attaches to the GitHub release, so tsdown's output must not stay there) |
+| `sbom` | installs the tarball (production dependencies, no scripts) into a scratch project and scans it with Syft (`dir:`, `-o spdx-json`) into `dist/<name>-<version>.spdx.json` |
+| `release-assets` | checks the tarball and SBOM are in `dist/` |
+| `publish` | no-op: it is image-only and runs per arch, and this template ships no image |
+| `publish-packages` | see below; runs once, publishes the tarball from `dist/`, so the artifact is exactly what was SBOM'd |
+| `release-check` | `scripts/release-check.sh`, in the devcontainer |
+| `finalize` | nothing to combine |
+
+`build`, `publish-packages` and the SBOM's Node work run through
+`scripts/release-run.sh`: on the host when it has pnpm (the devcontainer),
+else in the `node:<NODE_VERSION>` image (the bare runners `release.yml` uses,
+which have docker only; only Syft runs on the host). That is how
+`publish-packages` sets up Node on its bare runner: `release.yml` gives that
+job a checkout and the downloaded `dist/` and no `setup-node`, so nothing
+is installed on the runner itself; the pinned image supplies Node, and
+`release-lib.sh`'s `use_npm` the exact npm. pnpm is not needed to upload a
+tarball, so it is never invoked there. The image gets the OIDC variables
+(`ACTIONS_ID_TOKEN_REQUEST_*`) and `NPM_TOKEN`, never `NODE_AUTH_TOKEN`. Corepack ships with Node
+only up to 24.x, so the hook `scripts/develop.d/10-corepack.sh` and the image
+fallback install the pinned `corepack` from npm when it is missing. Each
+script resolves the exact npm pinned in `scripts/release-lib.sh` once (the
+host's npm if it is already that version, else installed into a temp prefix),
+since staged publishing needs npm 11.15.0 or later and OIDC trusted
+publishing 11.5.1 or later, and the Node in the devcontainer may ship an
+older one.
+
+**`publish-packages`** reads `NPM_PUBLISH` (a repository variable) and
+`NPM_TOKEN` (a secret that `release.yml` passes to that one step; empty means
+absent). `release.yml` starts its job only when `NPM_PUBLISH` (or another
+`*_PUBLISH` variable) is set, so the `skips` row below applies to a local or
+manual run; in CI an unset variable means the whole job is skipped. The job
+runs once, not per arch, and holds `id-token: write`; the per-arch `build`
+job has neither that nor the token.
+Before any stage or publish it checks, with `check_repository` in
+`scripts/release-lib.sh`, that the tarball's `repository` names
+`https://github.com/$GITHUB_REPOSITORY` (owner and repo case-sensitive). Every GitHub form npm
+accepts passes (as in npm's hosted-git-info, the scheme is case-insensitive,
+a `www.` host prefix is dropped, and the host is case-insensitive only in a
+plain `http(s)://` URL): the `owner/repo` and `github:owner/repo` shorthands,
+`[git+]https://`, `git://`, `[git+]ssh://` and `git@github.com:owner/repo`
+URLs, with or without `.git` and a trailing slash; another host, extra path
+segments or a `#ref` do not. This is checked because npm's provenance
+verification rejects any other value (E422); it is skipped with a notice
+when `GITHUB_REPOSITORY` is unset (a local run), and it only runs when
+`NPM_PUBLISH` is set. `npm_config_dry_run=true` turns either path into a
+dry run (nothing is uploaded):
+
+| `NPM_PUBLISH` | `NPM_TOKEN` | Does |
+|---|---|---|
+| empty | any | skips, with a `::warning::` saying the package was NOT published |
+| set | empty | `npm publish --provenance --access public` through OIDC trusted publishing (the `publish-packages` job's `id-token: write`); no stored credential |
+| set | set | bootstrap: `npm stage publish` with the token, passed in a temporary `--userconfig` npmrc that is deleted afterwards; prints how to approve |
+
+A package has no trusted publisher before its first release, and npm has no
+pending publishers (unlike PyPI), so the first release uses a bootstrap
+token created as "Read and write (stage only)" — npm is removing direct
+publishing for 2FA-bypass tokens. `npm stage publish` uploads the tarball
+to a staging area without 2FA and creates a public `0.0.0-stage`
+placeholder; the real version stays private until a maintainer approves it
+with 2FA (`npm stage list`, then `npm stage approve <stage-id>`, or on
+npmjs.com). **Known limitation:** `publish-packages` is not safe to re-run
+while a staged version is still unapproved. `npm view` does not see a staged
+version, so a re-run stages a duplicate, and nothing can detect it: `npm stage
+list` cannot use OIDC tokens (it needs interactive authentication), and a
+stage-only token is documented to stage, deprecate and move dist-tags only.
+Approve or reject the existing stage (`npm stage approve|reject <stage-id>`)
+before re-running `publish-packages`; after approving, re-run only
+`verify-published`. Afterwards configure the package's trusted publisher on
+npmjs.com (repository, workflow `release.yml`), delete the `NPM_TOKEN`
+secret, and later releases take the OIDC path. npm expires a trusted
+publisher that has not published within 48 hours of being configured.
+The dist-tag is chosen by `dist_tag` in `scripts/release-lib.sh`: a
+prerelease (`1.2.3-rc.1`) gets its first identifier (`rc`), or `next` when
+that is numeric (`1.2.3-0`), never `latest` (npm refuses a prerelease without
+an explicit tag); build metadata (`+build.5`) is ignored. A stable release
+gets `latest` only if it is not older than the registry's current `latest`
+(none yet means first release); a backport such as 1.4.3 published after
+2.0.0 gets `v1-latest` instead, so `latest` never moves backwards.
+
+**Syncing an existing package instance** (from a template older than 1.2.0,
+which uploaded from `publish` and so needed base 1.9.0's contract). Sync
+brings in base 1.9.0's `release.yml` (replace tier), whose `build` job no
+longer has `id-token: write` or `NPM_TOKEN`; so the instance's Makefile must
+rename `publish` to `publish-packages` (`scripts/release-run.sh
+scripts/release-publish.sh`), add it to `.PHONY`, and make `publish` a
+no-op. `scripts/release-*.sh` are replace tier, so the scripts come with the
+sync; the `Makefile` is instance-owned and does not. Until then the release
+fails loudly at `publish-packages` when `NPM_PUBLISH` is set.
+
+`NODE_AUTH_TOKEN` must stay unset everywhere (even empty): npm's OIDC
+trusted publishing breaks if it is present. `publish-packages` unsets it
+defensively; never map `NPM_TOKEN` to it in a workflow.
+
+**`release-check`** installs the `dist/` tarball into a scratch project and
+imports every `exports` entry (ESM, Node), checking the installed version.
+**`verify-published`** (when `NPM_PUBLISH` is set) looks the version up with
+`npm view`, retrying for registry propagation (10 attempts, 5 s
+doubling up to 60 s, about 6 minutes: npm can take minutes to show a fresh
+version; tune with `RELEASE_CHECK_ATTEMPTS`, `RELEASE_CHECK_DELAY`,
+`RELEASE_CHECK_MAX_DELAY`): if found it is installed from
+the registry and imported too; if it never appears, the script fails with an
+error, because a release whose package did not appear must not pass. That
+includes a staged first release that is not approved yet: approve it
+(`npm stage approve <stage-id>`) and re-run the `verify-published` job.
+"Not found" is both an E404 (read from the `error.code` of `npm view
+--json`, not matched as text) and `npm view` exiting 0 with empty output (the
+package exists, that version does not). Any other lookup
+failure (network, auth) fails the check.
+The template itself never publishes (`NPM_PUBLISH` unset) but its release
+must pass the tarball check.
+
+References: [staged publishing](https://docs.npmjs.com/staged-publishing),
+[`npm stage`](https://docs.npmjs.com/cli/v12/commands/npm-stage),
+[trusted publishing](https://docs.npmjs.com/trusted-publishers).
+
+## Code style
+
+Every file gets a brief header stating what the file *is for* — one
+line, sometimes two: a leading comment for most formats, a module
+docstring where the language has one. Never describe the file's contents
+in the header; that's what reading the file is for. Markdown files' own
+title/opening line already serves this purpose. A format with no comment
+syntax (`.json`) documents itself via the directory's `README.md`
+instead.
+
+A comment earns its place by saying something the code/config next to it
+can't: *why* it's written this way, a non-obvious consequence, or a
+constraint that isn't visible locally. Don't add a comment that just
+restates what the following line already says in code — if removing a
+comment loses no information, remove it. Every existing comment in this
+repository follows this rule; keep new ones held to the same bar.
+
+## Do
+
+- Read `CLAUDE.md` and the `README.md` of every directory on the path to
+  whatever you're changing before you change it.
+- Open this repo in the devcontainer rather than assembling the
+  toolchain by hand — it's the one environment this template guarantees.
+
+## Don't
+
+- Commit a `.env` file, or read one from application code — configuration
+  lives in the compose files; secrets live in `.secrets/`.
+- Add a `ports:` mapping or a `networks:` block to any file under
+  `.devcontainer/`.
+- Assume a language runtime, backing service, or release artifact exists
+  in this template — every one of those is instance-owned.

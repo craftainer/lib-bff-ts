@@ -1,0 +1,58 @@
+{
+  "name": "template-npm-package",
+  "version": "0.0.0",
+  "description": "Example ESM TypeScript package: replace with the real description.",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/craftainer/template-npm-package.git"
+  },
+  "homepage": "https://github.com/craftainer/template-npm-package#readme",
+  "bugs": {
+    "url": "https://github.com/craftainer/template-npm-package/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "packageManager": "pnpm@12.14.0",
+  "engines": {
+    "node": ">=24.22.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./extra": {
+      "types": "./dist/extra.d.mts",
+      "default": "./dist/extra.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "format": "prettier --check .",
+    "format:write": "prettier --write .",
+    "test": "vitest run --coverage",
+    "publint": "publint --strict",
+    "attw": "attw --pack . --profile esm-only",
+    "lockfile": "pnpm install --frozen-lockfile --lockfile-only"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "5.0.5",
+    "oxlint": "1.89.0",
+    "prettier": "3.9.10",
+    "publint": "0.3.25",
+    "tsdown": "0.23.1",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  // What tsdown compiles (see tsdown.config.ts): only the published sources,
+  // with isolatedDeclarations so declaration files are generated fast and
+  // every public export needs an explicit type annotation.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "isolatedDeclarations": true
+  },
+  "include": ["src"]
+}
