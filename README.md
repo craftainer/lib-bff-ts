@@ -71,7 +71,7 @@ neither present.
 
 Own routes: outside `/bff/*`, `/api/*`, `/health/*` and `/.well-known/*` they
 are yours entirely. Anything under `/bff/` gets the CSRF rule (non-GET needs
-`X-CSRF: 1`) and `Cache-Control: no-store` by default. `request.bffSession`
+`X-CSRF: 1`; see Endpoints) and `Cache-Control: no-store` by default. `request.bffSession`
 (`null` when not signed in, otherwise `{ id, data, accessTokenFor(upstream) }`)
 is available to your handlers on `/bff/*` and `/api/*` paths only.
 
@@ -112,16 +112,16 @@ All configuration is read by `loadConfig(env)`; there is no `SESSION_SECRET`
 
 ### OIDC
 
-| Variable               | Default                                          | Notes                                                                                                                                                                                                     |
-| ---------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OIDC_ISSUER`          | required                                         | The expected `iss` of ID, access and logout tokens. https (or `OIDC_ALLOW_INSECURE`).                                                                                                                     |
-| `OIDC_DISCOVERY_URL`   | `<OIDC_ISSUER>/.well-known/openid-configuration` | The full discovery URL; other shapes are rejected. Set it when the BFF reaches the IdP at an internal host while `iss` stays public. The discovery document's `issuer` must equal `OIDC_ISSUER`.          |
-| `OIDC_CLIENT_ID`       | `bff`                                            | The confidential client.                                                                                                                                                                                  |
-| `OIDC_CLIENT_SECRET`   | required                                         |                                                                                                                                                                                                           |
-| `OIDC_SCOPES`          | `openid profile email`                           | Must include `openid`.                                                                                                                                                                                    |
-| `OIDC_ALLOW_INSECURE`  | `false`                                          | Allows plain-http IdP URLs (and an http `CHANGE_PASSWORD_URL`). Development only; refused when `NODE_ENV=production`.                                                                                     |
-| `OIDC_TIMEOUT_SECONDS` | `10`                                             | Timeout of every IdP HTTP request (discovery, token, JWKS). Max 120, and must be **below the 30 s refresh-lock TTL**, so a refresh ends while its lock is held. (Revocation has its own fixed 2 s limit.) |
-| `BFF_UPSTREAMS`        | unset                                            | JSON, see [Proxy](#api-proxy).                                                                                                                                                                            |
+| Variable               | Default                                          | Notes                                                                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OIDC_ISSUER`          | required                                         | The expected `iss` of ID, access and logout tokens. https (or `OIDC_ALLOW_INSECURE`).                                                                                                                                                                            |
+| `OIDC_DISCOVERY_URL`   | `<OIDC_ISSUER>/.well-known/openid-configuration` | The full discovery URL; other shapes are rejected. Set it when the BFF reaches the IdP at an internal host while `iss` stays public. The discovery document's `issuer` must equal `OIDC_ISSUER`.                                                                 |
+| `OIDC_CLIENT_ID`       | `bff`                                            | The confidential client.                                                                                                                                                                                                                                         |
+| `OIDC_CLIENT_SECRET`   | required                                         |                                                                                                                                                                                                                                                                  |
+| `OIDC_SCOPES`          | `openid profile email`                           | Must include `openid`.                                                                                                                                                                                                                                           |
+| `OIDC_ALLOW_INSECURE`  | `false`                                          | Allows plain-http IdP URLs (and an http `CHANGE_PASSWORD_URL`). Development only; refused when `NODE_ENV=production`.                                                                                                                                            |
+| `OIDC_TIMEOUT_SECONDS` | `10`                                             | Timeout of every IdP HTTP request (discovery, token, JWKS). Whole seconds, and `loadConfig` rejects 30 or more (it must be **below the 30 s refresh-lock TTL**, so a refresh ends while its lock is held), so 1 to 29. (Revocation has its own fixed 2 s limit.) |
+| `BFF_UPSTREAMS`        | unset                                            | JSON, see [Proxy](#api-proxy).                                                                                                                                                                                                                                   |
 
 ### Sessions and rate limits
 
@@ -165,12 +165,14 @@ or LF (a line break would start a new `security.txt` field).
 
 ## Endpoints
 
-Every non-GET request to `/bff/*`, and every request to `/api/*`, must send
-`X-CSRF: 1`; unsafe methods are also rejected (`403`) when `Origin` is not
-`PUBLIC_ORIGIN` or `Sec-Fetch-Site` is not `same-origin` / `none`. The BFF
-sends no CORS headers. The three exemptions are `GET /bff/login`,
-`GET /bff/callback` and `POST /bff/backchannel-logout`. A `401` from the SPA's
-point of view means: navigate to `/bff/login`.
+Every non-GET request to `/bff/*` and every request to `/api/*` (any
+method) must send `X-CSRF: 1`; GET to the other `/bff/*` routes needs no header.
+Unsafe methods are also rejected (`403`) when `Origin` is not `PUBLIC_ORIGIN`
+or `Sec-Fetch-Site` is not `same-origin` / `none`. The BFF sends no CORS
+headers. `GET /bff/login` and `GET /bff/callback` are top-level navigations
+and carry no header; `POST /bff/backchannel-logout` is exempt from both checks
+because the IdP calls it and the signed logout token authenticates it. A `401`
+from the SPA's point of view means: navigate to `/bff/login`.
 
 | Endpoint                         | Behaviour                                                                                                                                                                                                                                                                                                         |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
