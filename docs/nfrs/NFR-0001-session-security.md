@@ -66,6 +66,12 @@ Targets that are measurable:
 | 10.5.4              | ID token `aud` is the client ID                                                     | `openid-client`                                                     | `auth-flow.test.ts` (the library validates `aud`; the test IdP issues for `bff`)                                    |
 | 10.5.5              | Logout token type, event, no `nonce`, short expiry                                  | `verifyLogoutToken`                                                 | `auth-backchannel.test.ts` "rejects invalid logout tokens"                                                          |
 
+The CSP is fixed (`script-src 'self'`, no inline script). SPA HTML
+responses add a per-request style nonce plus `style-src-attr 'unsafe-inline'`
+and are `no-store` (ADR 0005; `csp-nonce.test.ts`). `/api/*` is `no-store`
+(ASVS 14.3.2) unless an app sets `API_CACHE_CONTROL=upstream`, a recorded
+trade-off.
+
 Out of this library's scope, covered elsewhere: 3.4.1, 3.4.3 to 3.4.8
 (security headers, the `headers` plugin); 10.3 (resource servers, the
 backends); 10.4.1 to 10.4.7 and 10.4.9 (the IdP).
