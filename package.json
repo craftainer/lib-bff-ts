@@ -42,6 +42,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
+    "@opentelemetry/api-logs": "0.223.0",
     "@types/node": "24.19.2",
     "@types/oidc-provider": "9.13.1",
     "@vitest/coverage-v8": "5.0.5",
@@ -65,5 +66,13 @@
     "jose": "^6.2.14",
     "openid-client": "^6.8.8",
     "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api-logs": "^0.223.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api-logs": {
+      "optional": true
+    }
   }
 }
