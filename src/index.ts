@@ -24,6 +24,7 @@ export {
   type SessionData,
   type SessionStore,
 } from "./session.ts";
+export { default as wellKnown } from "./well-known.ts";
 export type {
   FastifyInstance,
   FastifyPluginAsync,

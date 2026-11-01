@@ -19,6 +19,7 @@ describe("public API", () => {
         "securityLog",
         "session",
         "staticFiles",
+        "wellKnown",
       ].sort(),
     );
   });

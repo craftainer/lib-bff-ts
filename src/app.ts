@@ -13,6 +13,7 @@ import { hardenLogger } from "./log.ts";
 import proxy from "./proxy.ts";
 import session, { BffHttpError, type SessionStore } from "./session.ts";
 import staticFiles from "./static.ts";
+import wellKnown from "./well-known.ts";
 
 /** Options for {@link createBff}. */
 export interface CreateBffOptions {
@@ -74,7 +75,7 @@ export async function createBff(
   await app.register(health, config);
   await app.register(formbody, { bodyLimit: 16 * 1024 });
   await app.register(auth, config);
-  // LB4: await app.register(wellKnown, config);
+  await app.register(wellKnown, config);
   // LB5: await app.register(analytics, config);
   await app.register(proxy, config);
   await app.register(staticFiles, config);
