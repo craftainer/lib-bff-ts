@@ -34,6 +34,14 @@ describe("security.txt (RFC 9116)", () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it("is absent when every contact carries a line break (programmatic config)", async () => {
+    await start({}, (config) => {
+      config.securityTxt.contact = ["mailto:a@b.c\nX: y"];
+    });
+    const res = await get("/.well-known/security.txt");
+    expect(res.statusCode).toBe(404);
+  });
+
   it("does not redirect the legacy /security.txt path (RFC 9116 section 3 only permits it)", async () => {
     await start({ SECURITY_TXT_CONTACT: "mailto:sec@example.com" });
     const res = await get("/security.txt");

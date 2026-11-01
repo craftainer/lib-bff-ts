@@ -69,7 +69,8 @@ function apiCatalog(config: BffConfig): Buffer {
  * and `api-catalog` (RFC 9727, always). GET and HEAD both work.
  */
 const wellKnown: FastifyPluginAsync<BffConfig> = async (app, config) => {
-  if (config.securityTxt.contact.length > 0) {
+  // A file without a valid Contact is invalid (RFC 9116), so it is not served.
+  if (config.securityTxt.contact.some(isSingleLine)) {
     // Computed once at startup, so the default `Expires` is stable between requests.
     const body = securityTxt(config, new Date());
     app.get("/.well-known/security.txt", async (_request, reply) =>

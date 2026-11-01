@@ -363,11 +363,13 @@ describe("loadConfig", () => {
     expect(
       issues({
         ...base,
+        SECURITY_TXT_CONTACT: "mailto:a@b.c\nContact: https://evil",
         SECURITY_TXT_POLICY: "https://a.b/p\nContact: https://evil",
         SECURITY_TXT_PREFERRED_LANGUAGES: "en\r\nX: y",
         SECURITY_TXT_CANONICAL: "https://a.b/c\nX: y",
       }),
     ).toEqual([
+      "SECURITY_TXT_CONTACT: must not contain line breaks",
       "SECURITY_TXT_POLICY: must not contain line breaks",
       "SECURITY_TXT_PREFERRED_LANGUAGES: must not contain line breaks",
       "SECURITY_TXT_CANONICAL: must not contain line breaks",
