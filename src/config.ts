@@ -414,6 +414,17 @@ function checkSecurityTxt(
       );
     }
   }
+  // A line break would start a new security.txt field (field injection).
+  for (const [name, value] of [
+    ["SECURITY_TXT_CONTACT", env.SECURITY_TXT_CONTACT.join(",")],
+    ["SECURITY_TXT_POLICY", env.SECURITY_TXT_POLICY],
+    ["SECURITY_TXT_PREFERRED_LANGUAGES", env.SECURITY_TXT_PREFERRED_LANGUAGES],
+    ["SECURITY_TXT_CANONICAL", env.SECURITY_TXT_CANONICAL],
+  ] as const) {
+    if (value !== undefined && /[\r\n]/.test(value)) {
+      issues.push(`${name}: must not contain line breaks`);
+    }
+  }
   if (
     env.SECURITY_TXT_EXPIRES !== undefined &&
     !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES)

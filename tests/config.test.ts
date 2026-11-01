@@ -361,6 +361,18 @@ describe("loadConfig", () => {
       "SECURITY_TXT_EXPIRES: required in production when SECURITY_TXT_CONTACT is set (RFC 9116)",
     );
     expect(
+      issues({
+        ...base,
+        SECURITY_TXT_POLICY: "https://a.b/p\nContact: https://evil",
+        SECURITY_TXT_PREFERRED_LANGUAGES: "en\r\nX: y",
+        SECURITY_TXT_CANONICAL: "https://a.b/c\nX: y",
+      }),
+    ).toEqual([
+      "SECURITY_TXT_POLICY: must not contain line breaks",
+      "SECURITY_TXT_PREFERRED_LANGUAGES: must not contain line breaks",
+      "SECURITY_TXT_CANONICAL: must not contain line breaks",
+    ]);
+    expect(
       issues({ ...base, CHANGE_PASSWORD_URL: "http://idp/account" }),
     ).toContain("CHANGE_PASSWORD_URL: must be an https URL");
   });
