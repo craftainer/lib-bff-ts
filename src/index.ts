@@ -8,6 +8,7 @@ export {
   type SecurityTxtConfig,
   type UpstreamConfig,
 } from "./config.ts";
+export { default as analytics } from "./analytics/index.ts";
 export { default as auth } from "./auth/index.ts";
 export { default as csrf } from "./csrf.ts";
 export { default as headers } from "./headers.ts";
