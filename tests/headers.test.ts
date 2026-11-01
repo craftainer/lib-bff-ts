@@ -76,17 +76,30 @@ describe("security headers", () => {
     expect(health.headers["cache-control"]).toBeUndefined();
   });
 
-  it("keeps a Cache-Control a route chose itself", async () => {
+  it("keeps a Cache-Control a BFF route chose itself", async () => {
+    const bff = await make();
+    bff.app.get("/bff/own", async (_request, reply) =>
+      reply.header("Cache-Control", "private, max-age=5").send({}),
+    );
+    const res = await bff.app.inject({
+      method: "GET",
+      url: "/bff/own",
+      headers: { "x-csrf": "1" },
+    });
+    expect(res.headers["cache-control"]).toBe("private, max-age=5");
+  });
+
+  it("forces no-store on /api/ whatever the upstream chose", async () => {
     const bff = await make();
     bff.app.get("/api/own", async (_request, reply) =>
-      reply.header("Cache-Control", "private, max-age=5").send({}),
+      reply.header("Cache-Control", "public, max-age=300").send({}),
     );
     const res = await bff.app.inject({
       method: "GET",
       url: "/api/own",
       headers: { "x-csrf": "1" },
     });
-    expect(res.headers["cache-control"]).toBe("private, max-age=5");
+    expect(res.headers["cache-control"]).toBe("no-store");
   });
 });
 

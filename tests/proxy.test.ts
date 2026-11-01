@@ -118,6 +118,24 @@ describe("routing and the allowlist", () => {
     expect(last().method).toBe("GET");
   });
 
+  it("forwards the path as the client sent it, encoded percent signs included", async () => {
+    await listening();
+    const { port } = bff.app.server.address() as { port: number };
+    for (const path of ["/items/100%25", "/a%2523b", "/a%252Fb", "/a%2Fb"]) {
+      const res = await rawGet(port, `/api/crud${path}`);
+      expect(res.status, path).toBe(200);
+      expect(last().url).toBe(path);
+    }
+  });
+
+  it("fails closed when the prefix only matches once decoded", async () => {
+    await listening();
+    const { port } = bff.app.server.address() as { port: number };
+    const before = up.seen.length;
+    expect((await rawGet(port, "/%61pi/crud/x")).status).toBe(400);
+    expect(up.seen.length).toBe(before);
+  });
+
   it("reaches the upstream root with and without a trailing slash", async () => {
     await get("/api/crud");
     expect(last().url).toBe("/");
@@ -147,6 +165,16 @@ describe("routing and the allowlist", () => {
     });
     expect(head.statusCode).toBe(405);
     expect(up.seen.length).toBe(before);
+  });
+
+  it("answers an anonymous caller 401, so the method list is not probeable", async () => {
+    const res = await bff.app.inject({
+      method: "DELETE",
+      url: "/api/crud/items/1",
+      headers: { "x-csrf": "1" },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.headers["allow"]).toBeUndefined();
   });
 
   it("does not reach anything outside the allowlist", async () => {
@@ -211,6 +239,8 @@ describe("request headers", () => {
       "accept-language": "de",
       "if-none-match": '"abc"',
       "if-modified-since": "Wed, 21 Oct 2015 07:28:00 GMT",
+      "if-match": '"abc"',
+      range: "bytes=0-9",
       traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
       tracestate: "a=b",
       "x-request-id": "req-1",
@@ -232,6 +262,8 @@ describe("request headers", () => {
     expect(h["accept-language"]).toBe("de");
     expect(h["if-none-match"]).toBe('"abc"');
     expect(h["if-modified-since"]).toBe("Wed, 21 Oct 2015 07:28:00 GMT");
+    expect(h["if-match"]).toBe('"abc"');
+    expect(h["range"]).toBe("bytes=0-9");
     expect(h.traceparent).toMatch(/^00-0af7/);
     expect(h.tracestate).toBe("a=b");
     expect(h["x-request-id"]).toBe("req-1");

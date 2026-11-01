@@ -35,6 +35,10 @@ const STATIC_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
 };
 
+function isApi(path: string): boolean {
+  return path === "/api" || path.startsWith("/api/");
+}
+
 function isDynamic(path: string): boolean {
   return path.startsWith("/api/") || path.startsWith("/bff/");
 }
@@ -43,8 +47,9 @@ function isDynamic(path: string): boolean {
  * Security headers on every response, including errors and proxied
  * responses (an upstream cannot weaken them). Set in `onSend`, so they win
  * over anything a route or upstream set. The BFF sends no CORS headers.
- * `/api/*` and `/bff/*` responses carry user data, so they get
- * `Cache-Control: no-store` unless the route already chose a policy.
+ * `/api/*` responses (whatever the upstream said) and `/bff/*` responses
+ * carry user data, so they get `Cache-Control: no-store`; BFF routes may
+ * choose their own policy.
  */
 const headers: FastifyPluginAsync<BffConfig> = async (app, config) => {
   const hsts =
@@ -59,8 +64,12 @@ const headers: FastifyPluginAsync<BffConfig> = async (app, config) => {
     if (hsts !== null) {
       void reply.header("Strict-Transport-Security", hsts);
     }
-    if (
-      isDynamic(pathOf(request.url)) &&
+    const path = pathOf(request.url);
+    if (isApi(path)) {
+      // The upstream chose its own policy, but this is per-user data.
+      void reply.header("Cache-Control", "no-store");
+    } else if (
+      isDynamic(path) &&
       reply.getHeader("cache-control") === undefined
     ) {
       void reply.header("Cache-Control", "no-store");

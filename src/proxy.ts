@@ -8,7 +8,6 @@ import type {
 import fp from "fastify-plugin";
 import type { IncomingHttpHeaders } from "node:http";
 import type { BffConfig, UpstreamConfig } from "./config.ts";
-import { pathOf } from "./log.ts";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -34,6 +33,11 @@ export const FORWARDED_REQUEST_HEADERS: readonly string[] = [
   "content-length",
   "if-none-match",
   "if-modified-since",
+  "if-match",
+  "if-unmodified-since",
+  "if-range",
+  "range",
+  "accept-encoding",
   "traceparent",
   "tracestate",
   "x-request-id",
@@ -74,16 +78,19 @@ function upstreamRequestHeaders(
 /**
  * True when the part of the path after `/api/<name>` cannot climb out of the
  * upstream's base path: no `.`/`..` segment (also percent-encoded, which the
- * WHATWG URL parser would resolve) and no backslash (parsed as `/`).
+ * WHATWG URL parser would resolve) and no backslash (parsed as `/`). Takes
+ * the raw (still encoded) suffix.
  */
 function isSafeSuffix(suffix: string): boolean {
-  // Fastify answers 400 to malformed percent-encoding before routing, so this
-  // cannot throw; if it ever did, the request would fail closed with a 500.
-  const decoded = decodeURIComponent(suffix);
+  // Looks at the encoded form only, so it cannot throw: `%2e` is a dot,
+  // `%2f` a slash and `%5c` a backslash. A double-encoded `%252e` stays
+  // literal text, and the raw path goes upstream as is.
   return (
-    !suffix.includes("\\") &&
-    !decoded.includes("\\") &&
-    !decoded.split("/").some((segment) => segment === "." || segment === "..")
+    !/\\|%5c/i.test(suffix) &&
+    !suffix
+      .replace(/%2e/gi, ".")
+      .split(/\/|%2f/i)
+      .some((segment) => segment === "." || segment === "..")
   );
 }
 
@@ -112,18 +119,22 @@ async function mountUpstream(
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<FastifyReply> => {
+    if (request.bffSession === null) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
     if (!methods.has(request.method)) {
       return reply
         .code(405)
         .header("Allow", upstream.methods.join(", "))
         .send({ error: "method_not_allowed" });
     }
-    const suffix = pathOf(request.url).slice(prefix.length);
-    if (!isSafeSuffix(suffix)) {
+    // The raw (still encoded) path goes upstream untouched, so an encoded
+    // `%25`, `%2F` or `%23` means to the upstream what it meant to the
+    // client. A prefix that only matches once decoded fails closed.
+    const rawPath = request.url.split(/[?#]/, 1)[0] as string;
+    const suffix = rawPath.slice(prefix.length);
+    if (!rawPath.startsWith(prefix) || !isSafeSuffix(suffix)) {
       return reply.code(400).send({ error: "invalid_path" });
-    }
-    if (request.bffSession === null) {
-      return reply.code(401).send({ error: "unauthorized" });
     }
     // Rejects with a BffHttpError (401 session_expired, 503) the app's error
     // handler maps, or a plain Error (token exchange is unsupported) -> 500.
