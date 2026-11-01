@@ -69,8 +69,9 @@ const staticFiles: FastifyPluginAsync<BffConfig> = async (app, config) => {
       if (request.method !== "GET" && request.method !== "HEAD") {
         return;
       }
-      // Fastify's router has already rejected malformed escapes (400).
-      const path = decodeURIComponent(pathOf(request.url));
+      // pathOf already decodes once, as the router does; a second decode
+      // would throw on `%25` and treat `/%2569ndex.html` as the index.
+      const path = pathOf(request.url);
       if (path === "/" || path === "/index.html") {
         if (await sendIndex(root, request, reply)) {
           return reply;

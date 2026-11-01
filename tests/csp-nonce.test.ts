@@ -43,6 +43,17 @@ describe("CSP nonce on SPA HTML", () => {
     expect(res.body.split(`nonce="${nonce}"`)).toHaveLength(4);
   });
 
+  it("does not double-decode the path: %25 is no 500, %2569ndex.html is no index", async () => {
+    const pct = await bff.app.inject({ method: "GET", url: "/%25" });
+    expect(pct.statusCode).toBe(404);
+    const dbl = await bff.app.inject({
+      method: "GET",
+      url: "/%2569ndex.html",
+    });
+    expect(dbl.statusCode).toBe(404);
+    expect(dbl.body).not.toContain("nonce=");
+  });
+
   it("is unique per request, on every HTML entry point", async () => {
     const seen = new Set<string>();
     for (const [url, headers] of [
