@@ -2,7 +2,11 @@ import type { LightMyRequestResponse } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONSENT_MAX_AGE_SECONDS } from "../src/analytics/index.ts";
 import type { TestBff } from "./helpers/bff.ts";
-import { makeAnalyticsBff } from "./helpers/analytics.ts";
+import {
+  eventLogs,
+  makeAnalyticsBff,
+  postEvents,
+} from "./helpers/analytics.ts";
 
 let bff: TestBff | undefined;
 afterEach(async () => {
@@ -49,17 +53,29 @@ describe("consent endpoints", () => {
     expect(CONSENT_MAX_AGE_SECONDS).toBe(15_552_000);
   });
 
-  it("withdraws consent by expiring the cookie with the same attributes", async () => {
+  it('records a decline as an explicit "0" cookie with the same attributes', async () => {
     const b = await start();
     const res = await consent(b, { analytics: false });
     expect(res.json()).toEqual({ analytics: false });
     const raw = String(res.headers["set-cookie"]);
-    expect(raw.split(";")[0]).toBe("__Host-Http-consent=");
-    expect(raw).toMatch(/Expires=Thu, 01 Jan 1970/);
+    expect(raw.split(";")[0]).toBe("__Host-Http-consent=0");
+    expect(raw).toContain(`Max-Age=${CONSENT_MAX_AGE_SECONDS}`);
     expect(raw).toMatch(/; HttpOnly/);
     expect(raw).toMatch(/; Secure/);
     expect(raw).toMatch(/; SameSite=Strict/);
     expect(raw).toMatch(/; Path=\//);
+  });
+
+  it("honours an explicit decline even under implied consent", async () => {
+    const b = await start();
+    const send = (cookie?: string): Promise<LightMyRequestResponse> =>
+      postEvents(b, { name: "a.b" }, cookie === undefined ? {} : { cookie });
+    await send();
+    expect(eventLogs(b)).toHaveLength(1);
+    await send("__Host-Http-consent=0");
+    expect(eventLogs(b)).toHaveLength(1);
+    await send("__Host-Http-consent=1");
+    expect(eventLogs(b)).toHaveLength(2);
   });
 
   it("GET reports the state from the cookie", async () => {

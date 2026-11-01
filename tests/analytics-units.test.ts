@@ -151,6 +151,24 @@ describe("BoundedQueue", () => {
     await queue.close();
   });
 
+  it("survives a logger that throws", async () => {
+    const log = fakeLog();
+    log.warn.mockImplementation(() => {
+      throw new Error("transport down");
+    });
+    const queue = new BoundedQueue<number>({
+      capacity: 1,
+      intervalMs: 5000,
+      deliver: () => Promise.reject(new Error("boom")),
+      log,
+    });
+    queue.push(1);
+    queue.push(2);
+    await expect(queue.flush()).resolves.toBeUndefined();
+    queue.push(3);
+    await expect(queue.close()).resolves.toBeUndefined();
+  });
+
   it("close flushes the rest, stops the timer and ignores later pushes", async () => {
     const deliver = vi.fn(() => Promise.resolve());
     const queue = new BoundedQueue<number>({

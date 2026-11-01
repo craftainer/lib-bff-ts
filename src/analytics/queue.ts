@@ -55,24 +55,30 @@ export class BoundedQueue<T> {
   }
 
   async #drain(): Promise<void> {
-    if (this.#dropped > 0) {
-      this.#options.log.warn(
-        { dropped: this.#dropped },
-        "analytics queue full: events dropped",
-      );
-      this.#dropped = 0;
-    }
+    const dropped = this.#dropped;
+    this.#dropped = 0;
     const batch = this.#items.splice(0);
-    if (batch.length === 0) {
-      return;
-    }
     try {
+      if (dropped > 0) {
+        this.#options.log.warn(
+          { dropped },
+          "analytics queue full: events dropped",
+        );
+      }
+      if (batch.length === 0) {
+        return;
+      }
       await this.#options.deliver(batch);
     } catch (error) {
-      this.#options.log.warn(
-        { err: String(error), events: batch.length },
-        "analytics delivery failed",
-      );
+      // A throwing logger must not leave the chain rejected for good.
+      try {
+        this.#options.log.warn(
+          { err: String(error), events: batch.length },
+          "analytics delivery failed",
+        );
+      } catch {
+        // Nothing left to report to.
+      }
     }
   }
 }

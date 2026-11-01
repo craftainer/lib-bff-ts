@@ -37,8 +37,9 @@ empty `202` as an accepted one, when analytics is disabled, the backend is
 true, or `ANALYTICS_CONSENT=opt-in` and consent was not granted. The drop
 check runs before validation, so the SPA cannot probe the policy.
 
-**Consent state.** `POST /bff/consent {analytics: boolean}` sets or clears
-the cookie `__Host-Http-consent=1` (`HttpOnly; Secure; SameSite=Strict;
+**Consent state.** `POST /bff/consent {analytics: boolean}` sets the
+cookie `__Host-Http-consent` to `1` (granted) or `0` (declined; an explicit
+decline also stops recording under `implied` consent) (`HttpOnly; Secure; SameSite=Strict;
 Path=/`, no `Domain`, `Max-Age` 180 days, about the six months CNIL
 recommends before asking again). `GET /bff/consent` answers
 `{analytics: boolean}`. An `onRequest` hook sets
@@ -86,8 +87,8 @@ request, and `onClose` flushes the queue.
 ## Consequences
 
 - No analytics cookie, no browser ID and no raw IP leave the BFF, so the
-  default fits the CNIL exemption. The consent cookie exists only in
-  `opt-in` mode and holds a flag, not an identifier.
+  default fits the CNIL exemption. The consent cookie is set only when the
+  visitor answers `POST /bff/consent` and holds a flag, not an identifier.
 - **Limitation, accepted:** each replica keeps its own salt, so one visitor
   served by several replicas, or across a restart within a day, gets
   several tokens and unique-visitor counts inflate. A shared salt would need

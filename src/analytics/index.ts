@@ -71,6 +71,10 @@ function mayRecord(a: AnalyticsConfig, request: FastifyRequest): boolean {
   if (a.respectGpc && (gpc === "1" || dnt === "1")) {
     return false;
   }
+  // An explicit decline ("0") wins in every mode, including `implied`.
+  if (request.cookies[CONSENT_COOKIE_NAME] === "0") {
+    return false;
+  }
   return a.consent !== "opt-in" || request.bffAnalyticsConsent === true;
 }
 
@@ -149,14 +153,13 @@ const analytics: FastifyPluginAsync<BffConfig> = async (app, config) => {
       if (!parsed.success) {
         return reply.code(400).send({ error: "invalid_consent" });
       }
-      if (parsed.data.analytics) {
-        void reply.setCookie(CONSENT_COOKIE_NAME, "1", {
-          ...consentCookie(),
-          maxAge: CONSENT_MAX_AGE_SECONDS,
-        });
-      } else {
-        void reply.clearCookie(CONSENT_COOKIE_NAME, consentCookie());
-      }
+      // Both answers are stored: "0" records an explicit decline, which the
+      // drop rules honour even under `implied` consent.
+      void reply.setCookie(
+        CONSENT_COOKIE_NAME,
+        parsed.data.analytics ? "1" : "0",
+        { ...consentCookie(), maxAge: CONSENT_MAX_AGE_SECONDS },
+      );
       return { analytics: parsed.data.analytics };
     },
   );
