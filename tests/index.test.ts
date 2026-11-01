@@ -12,10 +12,13 @@ describe("public API", () => {
         "createBff",
         "createMemorySessionStore",
         "csrf",
+        "headers",
         "health",
         "loadConfig",
+        "proxy",
         "securityLog",
         "session",
+        "staticFiles",
       ].sort(),
     );
   });
