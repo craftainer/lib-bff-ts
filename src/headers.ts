@@ -25,8 +25,10 @@ const CSP_DIRECTIVES_AFTER_STYLE = [
 
 /**
  * Content-Security-Policy for the SPA (OWASP CSP and Secure Headers cheat
- * sheets; ASVS 5.0 V3): same-origin everything, no inline script or style,
- * no plugins, no framing, no `<base>`.
+ * sheets; ASVS 5.0 V3): same-origin everything, no inline script, no
+ * plugins, no framing, no `<base>`. This is the policy for every response
+ * except SPA HTML, which allows nonce'd `<style>` elements and
+ * `style-src-attr 'unsafe-inline'` (see `contentSecurityPolicyWithNonce`).
  */
 export const CONTENT_SECURITY_POLICY: string = [
   ...CSP_DIRECTIVES_BEFORE_STYLE,
@@ -107,11 +109,15 @@ const headers: FastifyPluginAsync<BffConfig> = async (app, config) => {
     if (isApi(path)) {
       // The upstream chose its own policy, but this is per-user data;
       // `upstream` mode (ADR 0005) keeps it and defaults only a missing one.
-      if (
-        config.apiCacheControl === "no-store" ||
-        reply.getHeader("cache-control") === undefined
-      ) {
+      const upstream = reply.getHeader("cache-control");
+      if (config.apiCacheControl === "no-store" || upstream === undefined) {
         void reply.header("Cache-Control", "no-store");
+      } else {
+        // A shared cache must never store per-user data: `public` -> `private`.
+        void reply.header(
+          "Cache-Control",
+          String(upstream).replace(/\bpublic\b/gi, "private"),
+        );
       }
     } else if (
       isDynamic(path) &&

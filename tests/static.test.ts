@@ -8,7 +8,7 @@ import { makeBff, type TestBff } from "./helpers/bff.ts";
 const INDEX =
   '<!doctype html><title>spa</title><script nonce="__CSP_NONCE__" src=/assets/a.js>';
 const plain = (html: string): string =>
-  html.replace(/nonce="[^"]*"/, 'nonce="__CSP_NONCE__"');
+  html.replace(/nonce="[^"]*"/g, 'nonce="__CSP_NONCE__"');
 const HTML = { accept: "text/html,application/xhtml+xml", "x-csrf": "1" };
 let dir: string;
 let bff: TestBff;

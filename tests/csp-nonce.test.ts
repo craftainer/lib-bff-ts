@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -52,6 +52,21 @@ describe("CSP nonce on SPA HTML", () => {
     });
     expect(dbl.statusCode).toBe(404);
     expect(dbl.body).not.toContain("nonce=");
+  });
+
+  it("answers HEAD on the SPA fallback with the HTML headers and no body", async () => {
+    const res = await bff.app.inject({
+      method: "HEAD",
+      url: "/orders/42",
+      headers: HTML,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(String(res.headers["content-security-policy"])).toContain(
+      "style-src-elem 'self' 'nonce-",
+    );
+    expect(res.body).toBe("");
   });
 
   it("is unique per request, on every HTML entry point", async () => {
@@ -133,6 +148,26 @@ describe("CSP nonce on SPA HTML", () => {
     });
     expect(fallback.statusCode).toBe(404);
     await rm(empty, { recursive: true, force: true });
+    expect(other.logs.some((l) => l.msg === "cannot read index.html")).toBe(
+      false,
+    );
+  });
+
+  it("logs an unreadable index.html (not ENOENT) and still falls through", async () => {
+    const odd = await mkdtemp(join(tmpdir(), "bff-nonce-dir-"));
+    await mkdir(join(odd, "index.html"));
+    const other = await makeBff(idp, { env: { BFF_STATIC_DIR: odd } });
+    open.push(other);
+    const res = await other.app.inject({
+      method: "GET",
+      url: "/x",
+      headers: HTML,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(other.logs.some((l) => l.msg === "cannot read index.html")).toBe(
+      true,
+    );
+    await rm(odd, { recursive: true, force: true });
   });
 });
 
@@ -169,10 +204,20 @@ describe("API_CACHE_CONTROL", () => {
 
   it("upstream: passes the upstream value through, defaults a missing one", async () => {
     const env = { API_CACHE_CONTROL: "upstream" };
-    expect(await cacheControl(env, "public, max-age=300")).toBe(
-      "public, max-age=300",
+    expect(await cacheControl(env, "private, max-age=300")).toBe(
+      "private, max-age=300",
     );
     expect(await cacheControl(env, null)).toBe("no-store");
+  });
+
+  it("upstream: rewrites public to private and keeps the rest", async () => {
+    const env = { API_CACHE_CONTROL: "upstream" };
+    expect(await cacheControl(env, "public, max-age=300")).toBe(
+      "private, max-age=300",
+    );
+    expect(await cacheControl(env, "max-age=60, PUBLIC, s-maxage=5")).toBe(
+      "max-age=60, private, s-maxage=5",
+    );
   });
 
   it("is validated by loadConfig", () => {

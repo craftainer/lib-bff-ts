@@ -67,7 +67,8 @@ Targets that are measurable:
 | 10.5.5              | Logout token type, event, no `nonce`, short expiry                                  | `verifyLogoutToken`                                                 | `auth-backchannel.test.ts` "rejects invalid logout tokens"                                                          |
 
 The CSP is fixed (`script-src 'self'`, no inline script). SPA HTML
-responses add a per-request style nonce plus `style-src-attr 'unsafe-inline'`
+responses allow nonce'd `<style>` elements (a per-request nonce) and inline
+`style` attributes (`style-src-attr 'unsafe-inline'`)
 and are `no-store` (ADR 0005; `csp-nonce.test.ts`). `/api/*` is `no-store`
 (ASVS 14.3.2) unless an app sets `API_CACHE_CONTROL=upstream`, a recorded
 trade-off.

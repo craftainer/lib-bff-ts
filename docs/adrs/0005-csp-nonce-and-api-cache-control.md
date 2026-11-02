@@ -37,8 +37,10 @@ safe to cache, such as public reference data behind an upstream.
   `<meta property="csp-nonce">` tag. A fixed value needs no config knob; a
   knob would only add a way to disagree with the build.
 - **`API_CACHE_CONTROL`.** `no-store` (default) keeps the forced header.
-  `upstream` passes an upstream-sent `Cache-Control` through unchanged and
-  sets `no-store` only on responses without one. `loadConfig` rejects any
+  `upstream` passes an upstream-sent `Cache-Control` through and sets
+  `no-store` only on responses without one. A `public` directive is
+  rewritten to `private` (the rest is kept), so a shared cache never stores
+  a response that may be per-user; `private` and `max-age` are untouched. `loadConfig` rejects any
   other value.
 
 ## Consequences

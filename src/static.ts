@@ -51,7 +51,10 @@ const staticFiles: FastifyPluginAsync<BffConfig> = async (app, config) => {
     let html: string;
     try {
       html = await readFile(join(dir, "index.html"), "utf8");
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        request.log.error({ err: error }, "cannot read index.html");
+      }
       return false;
     }
     const nonce = randomBytes(16).toString("base64");
@@ -102,7 +105,7 @@ const staticFiles: FastifyPluginAsync<BffConfig> = async (app, config) => {
   app.setNotFoundHandler(async (request, reply) => {
     if (
       root !== null &&
-      request.method === "GET" &&
+      (request.method === "GET" || request.method === "HEAD") &&
       (request.headers.accept ?? "").includes("text/html") &&
       !isReserved(pathOf(request.url)) &&
       (await sendIndex(root, request, reply))
