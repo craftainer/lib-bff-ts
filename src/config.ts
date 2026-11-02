@@ -79,6 +79,12 @@ export interface BffConfig {
    * list of proxy IPs / CIDRs / `loopback`, `linklocal`, `uniquelocal`.
    */
   trustProxy: boolean | number | string[];
+  /**
+   * `/api/*` Cache-Control policy. `no-store` (default) forces it on every
+   * response; `upstream` lets an upstream-sent Cache-Control through
+   * unchanged and sets `no-store` only when there is none.
+   */
+  apiCacheControl: "no-store" | "upstream";
   oidc: {
     issuer: string;
     /** Full `.../.well-known/openid-configuration` URL. */
@@ -245,6 +251,7 @@ const envSchema = z.object({
   BFF_HOST: z.string().default("0.0.0.0"),
   BFF_STATIC_DIR: optionalString,
   BFF_TRUST_PROXY: trustProxy,
+  API_CACHE_CONTROL: z.enum(["no-store", "upstream"]).default("no-store"),
   PUBLIC_ORIGIN: z.string().min(1),
   OIDC_ISSUER: z.url(),
   OIDC_DISCOVERY_URL: optionalString,
@@ -513,6 +520,7 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
     staticDir: e.BFF_STATIC_DIR ?? null,
     publicOrigin: origin,
     trustProxy: e.BFF_TRUST_PROXY,
+    apiCacheControl: e.API_CACHE_CONTROL,
     oidc: {
       issuer: e.OIDC_ISSUER,
       discoveryUrl,

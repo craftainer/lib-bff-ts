@@ -5,7 +5,10 @@ import type { LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeBff, type TestBff } from "./helpers/bff.ts";
 
-const INDEX = "<!doctype html><title>spa</title><script src=/assets/a.js>";
+const INDEX =
+  '<!doctype html><title>spa</title><script nonce="__CSP_NONCE__" src=/assets/a.js>';
+const plain = (html: string): string =>
+  html.replace(/nonce="[^"]*"/g, 'nonce="__CSP_NONCE__"');
 const HTML = { accept: "text/html,application/xhtml+xml", "x-csrf": "1" };
 let dir: string;
 let bff: TestBff;
@@ -43,15 +46,15 @@ describe("static files", () => {
   it("serves index.html at / with no-cache", async () => {
     const res = await get("/");
     expect(res.statusCode).toBe(200);
-    expect(res.body).toBe(INDEX);
+    expect(plain(res.body)).toBe(INDEX);
     expect(res.headers["content-type"]).toMatch(/^text\/html/);
-    expect(res.headers["cache-control"]).toBe("no-cache");
+    expect(res.headers["cache-control"]).toBe("no-store");
   });
 
   it("serves index.html by name with no-cache", async () => {
     const res = await get("/index.html");
     expect(res.statusCode).toBe(200);
-    expect(res.headers["cache-control"]).toBe("no-cache");
+    expect(res.headers["cache-control"]).toBe("no-store");
   });
 
   it("caches hashed assets as immutable", async () => {
@@ -106,8 +109,8 @@ describe("SPA fallback", () => {
   it("serves index.html for an unknown path when the client accepts HTML", async () => {
     const res = await get("/orders/42", HTML);
     expect(res.statusCode).toBe(200);
-    expect(res.body).toBe(INDEX);
-    expect(res.headers["cache-control"]).toBe("no-cache");
+    expect(plain(res.body)).toBe(INDEX);
+    expect(res.headers["cache-control"]).toBe("no-store");
   });
 
   it("answers a JSON 404 for an unknown path without Accept: text/html", async () => {

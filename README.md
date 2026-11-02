@@ -17,7 +17,9 @@ It is ESM-only TypeScript, created from
 every instance). The design is recorded in
 [ADR 0002](docs/adrs/0002-bff-design.md) (sessions and OIDC),
 [ADR 0003](docs/adrs/0003-well-known-endpoints.md) (well-known endpoints) and
-[ADR 0004](docs/adrs/0004-analytics-endpoint.md) (analytics); the security
+[ADR 0004](docs/adrs/0004-analytics-endpoint.md) (analytics) and
+[ADR 0005](docs/adrs/0005-csp-nonce-and-api-cache-control.md) (CSP nonce, API
+caching); the security
 requirements are in [NFR-0001](docs/nfrs/NFR-0001-session-security.md) and
 [NFR-0002](docs/nfrs/NFR-0002-analytics-privacy.md).
 
@@ -82,7 +84,8 @@ individually, so an app can compose its own set, keeping the order):
 
 1. `headers`: security headers on every response (CSP, COOP, CORP,
    `Referrer-Policy`, `Permissions-Policy`, `nosniff`, HSTS in production
-   over https). `Cache-Control: no-store` on `/api/*` and `/bff/*`.
+   over https). `Cache-Control: no-store` on `/api/*` (unless
+   `API_CACHE_CONTROL=upstream`) and `/bff/*`.
 2. `csrf`: `X-CSRF: 1` plus Origin / `Sec-Fetch-Site` checks.
 3. `session`: session store, cookie, `request.bffSession`, token refresh.
 4. `health`: `/health/live` and `/health/ready`.
@@ -91,7 +94,9 @@ individually, so an app can compose its own set, keeping the order):
 7. `wellKnown`: `/.well-known/*`.
 8. `analytics`: `/bff/analytics` and `/bff/consent`.
 9. `proxy`: `/api/<name>/*`.
-10. `static`: the built SPA, SPA fallback and the JSON 404.
+10. `static`: the built SPA, SPA fallback and the JSON 404. `index.html` is
+    served `no-store` with a per-request CSP nonce, see
+    [Content-Security-Policy](#content-security-policy-and-the-nonce).
 
 ## Configuration
 
@@ -101,14 +106,35 @@ All configuration is read by `loadConfig(env)`; there is no `SESSION_SECRET`
 
 ### Server and proxy
 
-| Variable          | Default   | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ----------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`        | unset     | `production` turns on HSTS and the production-only rules below.                                                                                                                                                                                                                                                                                                                                                                        |
-| `BFF_PORT`        | `8080`    | 1 to 65535.                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `BFF_HOST`        | `0.0.0.0` | Bind address (used by your `listen()` call).                                                                                                                                                                                                                                                                                                                                                                                           |
-| `BFF_STATIC_DIR`  | unset     | Directory of the built SPA. Unset: no static files, only the JSON 404.                                                                                                                                                                                                                                                                                                                                                                 |
-| `PUBLIC_ORIGIN`   | required  | The browser-facing origin: `https://host[:port]`, no path, query or credentials. `http` only for `localhost` outside production. It derives `redirect_uri`, the Origin check and HSTS; the `Host` header is never used.                                                                                                                                                                                                                |
-| `BFF_TRUST_PROXY` | `false`   | Fastify `trustProxy`, which sets `request.ip` and so the rate-limit buckets and logs. `true` (trust every hop; a client can then forge `X-Forwarded-For`, so avoid), `false`, a hop count (e.g. `1`), or a comma-separated list of IPs / CIDRs / `loopback`, `linklocal`, `uniquelocal`. Behind a reverse proxy prefer a hop count or the proxy's address range. With `false`, all clients behind a proxy share one rate-limit bucket. |
+| Variable            | Default    | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`          | unset      | `production` turns on HSTS and the production-only rules below.                                                                                                                                                                                                                                                                                                                                                                        |
+| `BFF_PORT`          | `8080`     | 1 to 65535.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `BFF_HOST`          | `0.0.0.0`  | Bind address (used by your `listen()` call).                                                                                                                                                                                                                                                                                                                                                                                           |
+| `BFF_STATIC_DIR`    | unset      | Directory of the built SPA. Unset: no static files, only the JSON 404.                                                                                                                                                                                                                                                                                                                                                                 |
+| `PUBLIC_ORIGIN`     | required   | The browser-facing origin: `https://host[:port]`, no path, query or credentials. `http` only for `localhost` outside production. It derives `redirect_uri`, the Origin check and HSTS; the `Host` header is never used.                                                                                                                                                                                                                |
+| `BFF_TRUST_PROXY`   | `false`    | Fastify `trustProxy`, which sets `request.ip` and so the rate-limit buckets and logs. `true` (trust every hop; a client can then forge `X-Forwarded-For`, so avoid), `false`, a hop count (e.g. `1`), or a comma-separated list of IPs / CIDRs / `loopback`, `linklocal`, `uniquelocal`. Behind a reverse proxy prefer a hop count or the proxy's address range. With `false`, all clients behind a proxy share one rate-limit bucket. |
+| `API_CACHE_CONTROL` | `no-store` | `no-store` forces `Cache-Control: no-store` on every `/api/*` response. `upstream` passes an upstream-sent `Cache-Control` through (`public` is rewritten to `private`) and sets `no-store` only when there is none. Trade-off in [ADR 0005](docs/adrs/0005-csp-nonce-and-api-cache-control.md) (ASVS 14.3.2). Anything else is rejected.                                                                                              |
+
+### Content-Security-Policy and the nonce
+
+Every response carries `default-src 'self'; script-src 'self'; style-src
+'self'; img-src 'self' data:; connect-src 'self'; object-src 'none';
+base-uri 'none'; frame-ancestors 'none'; form-action 'self'`. The SPA's HTML
+(`/`, `/index.html` and the fallback) additionally gets
+`style-src-elem 'self' 'nonce-<n>'` and `style-src-attr 'unsafe-inline'`,
+for MUI/Emotion, and `Cache-Control: no-store`. `<n>` is a fresh 16-byte
+base64 value per response, substituted for the placeholder `__CSP_NONCE__`
+(exported as `CSP_NONCE_PLACEHOLDER`). Set it in the SPA's `vite.config`:
+
+```ts
+export default defineConfig({ html: { cspNonce: "__CSP_NONCE__" } });
+```
+
+Vite then emits `nonce="__CSP_NONCE__"` on script, style and stylesheet
+link tags and a `<meta property="csp-nonce" nonce="__CSP_NONCE__">` tag,
+from which the app builds Emotion's `createCache({ nonce })`. Other static
+files keep their caching. See [ADR 0005](docs/adrs/0005-csp-nonce-and-api-cache-control.md).
 
 ### OIDC
 
@@ -276,7 +302,9 @@ invalid_path`. The body is streamed byte for byte, any content type.
   `1`. This is the contract the craftainer backends' analytics read.
 - Upstream `Set-Cookie`, `Strict-Transport-Security` and `Access-Control-*`
   response headers are removed. Responses carry `Cache-Control: no-store`
-  whatever the upstream said, and the BFF's security headers.
+  whatever the upstream said (with `API_CACHE_CONTROL=upstream`, an
+  upstream's own `Cache-Control` is kept and only a missing one becomes
+  `no-store`), and the BFF's security headers.
 - An unreachable upstream answers `502 bad_gateway`.
 
 ## Security events

@@ -28,6 +28,7 @@ describe("loadConfig", () => {
       staticDir: null,
       publicOrigin: "https://app.example.com",
       trustProxy: false,
+      apiCacheControl: "no-store",
       oidc: {
         issuer: "https://idp.example.com/realms/x",
         discoveryUrl:
