@@ -5,10 +5,10 @@
 # 11.5.1; the Node in .devcontainer/Dockerfile may ship an older npm, so every
 # step runs this exact one (see use_npm).
 # renovate: datasource=npm depName=npm
-NPM_VERSION=11.19.1
+NPM_VERSION=11.21.1
 
 # renovate: datasource=docker depName=anchore/syft
-SYFT_VERSION=v1.52.0
+SYFT_VERSION=v1.55.0
 
 export npm_config_update_notifier=false
 # Corepack's implicit shims prompt before downloading pnpm; there is no one
