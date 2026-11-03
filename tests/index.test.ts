@@ -6,6 +6,7 @@ describe("public API", () => {
     expect(Object.keys(api).sort()).toEqual(
       [
         "BffHttpError",
+        "CSP_NONCE_PLACEHOLDER",
         "ConfigError",
         "LOGIN_COOKIE_NAME",
         "analytics",
