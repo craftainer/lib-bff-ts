@@ -47,7 +47,7 @@ repos:
         stages: [pre-commit, manual]
 
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
+    rev: v4.5.0
     hooks:
       # No "manual" stage here, unlike every other hook in this file: this
       # one needs the actual commit-message file git passes at the
@@ -157,7 +157,7 @@ repos:
   # pre-commit manager bumps tags directly, and a SHA + "# frozen: vX"
   # comment is pre-commit.ci's convention that it doesn't maintain.
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.31.1
+    rev: v1.32.0
     hooks:
       # Offline when run locally (no token); checks.yml passes GH_TOKEN
       # through to the devcontainer so CI also runs the online audits.
