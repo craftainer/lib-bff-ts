@@ -23,7 +23,7 @@ on_exit "rm -rf '$scratch'"
 scripts/release-run.sh scripts/release-sbom-install.sh "$rel" "dist/$(basename "$scratch")"
 
 out=${tarball%.tgz}.spdx.json
-docker run --rm -u "$(id -u):$(id -g)" --tmpfs /tmp:rw,mode=1777 -e XDG_CACHE_HOME=/tmp -v "$PWD/dist:/dist" "anchore/syft:$SYFT_VERSION" \
+docker run --rm -u "$(id -u):$(id -g)" --tmpfs /tmp:rw,mode=1777 -e XDG_CACHE_HOME=/tmp -v "$PWD/dist:/dist" "$SYFT_IMAGE" \
     "dir:/dist/$(basename "$scratch")" --source-name "$name" --source-version "$version" \
     -o "spdx-json=/dist/$(basename "$out")"
 ls dist
