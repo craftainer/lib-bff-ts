@@ -108,6 +108,7 @@ ignore:
   # so none of it can be synced. The tool configs are scaffold too: they
   # name this package's entries (tsdown.config.ts) and coverage scope.
   - package.json
+  - pnpm-workspace.yaml
   - tsconfig*.json
   - tsdown.config.ts
   - vitest.config.ts

@@ -47,7 +47,7 @@ repos:
         stages: [pre-commit, manual]
 
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
+    rev: v4.5.0
     hooks:
       # No "manual" stage here, unlike every other hook in this file: this
       # one needs the actual commit-message file git passes at the
@@ -140,7 +140,7 @@ repos:
         name: scripts-tests (.github/scripts unit tests, executable bits)
         entry: env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/scripts -p "test_*.py"
         language: system
-        files: ^(\.github/(scripts|workflows)/|\.claude/hooks/|Makefile$)
+        files: ^(\.github/(scripts|workflows)/|\.claude/hooks/|Makefile$|\.devcontainer/Dockerfile$|scripts/release-lib\.sh$)
         pass_filenames: false
         stages: [pre-commit, manual]
 

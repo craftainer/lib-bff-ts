@@ -352,11 +352,21 @@ OIDC, with provenance), with no token stored:
    version is not installable, and `make verify-published` (the release
    workflow's last job, after the GitHub release exists) fails saying so;
    re-run that job after approving.
-3. On npmjs.com, add the package's trusted publisher (this repository,
-   workflow `release.yml`), then delete the `NPM_TOKEN` secret. Later
-   releases publish directly through OIDC; npm expires a trusted-publisher
-   configuration that has not published within 48 hours, so do this just
-   before the next release.
+3. On npmjs.com, add the package's trusted publisher: this repository,
+   workflow `release.yml`, environment `release`. The environment field is
+   the binding control: it limits OIDC publishing to jobs that declare
+   `environment: release`, which template-base's `release.yml` does for its
+   privileged jobs (with a deployment-branch rule allowing only the default
+   branch). Then take the repository out of the `NPM_TOKEN` secret's reach.
+   A present `NPM_TOKEN` is preferred over OIDC (`release-publish.sh` stages
+   with it and never tries OIDC), so the token must not reach the repository
+   for trusted publishing to engage. If `NPM_TOKEN` is an organization
+   secret, you cannot delete it from here: change its repository access
+   (organization Settings > Secrets and variables > Actions) to exclude this
+   repository, or delete a repository-level copy. Later releases publish
+   directly through OIDC; npm expires a trusted-publisher configuration that
+   has not published within 48 hours, so do this just before the next
+   release.
 
 The version lives only in the git tag `release.yml` computes;
 `package.json` stays at `0.0.0` and `make build` stamps `RELEASE_VERSION`
