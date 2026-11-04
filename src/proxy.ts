@@ -7,7 +7,9 @@ import type {
 } from "fastify";
 import fp from "fastify-plugin";
 import type { IncomingHttpHeaders } from "node:http";
+import { pipeline, Transform } from "node:stream";
 import type { BffConfig, UpstreamConfig } from "./config.ts";
+import { BffHttpError } from "./session.ts";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -98,11 +100,36 @@ async function mountUpstream(
   scope: FastifyInstance,
   name: string,
   upstream: UpstreamConfig,
+  bodyLimit: number,
 ): Promise<void> {
   // The body goes upstream byte for byte: no JSON parsing, any content type.
+  // It streams (nothing is buffered), but Fastify applies `bodyLimit` only to
+  // buffered bodies, so the limit is enforced here: a `Content-Length` above
+  // it answers 413 before anything goes upstream, and a counting transform
+  // aborts a longer chunked body mid-flight (the upstream request is aborted,
+  // never completed) and answers 413.
+  const tooLarge = new WeakSet<FastifyRequest>();
   scope.removeAllContentTypeParsers();
-  scope.addContentTypeParser("*", (_request, payload, done) => {
-    done(null, payload);
+  scope.addContentTypeParser("*", (request, payload, done) => {
+    if (Number(request.headers["content-length"] ?? 0) > bodyLimit) {
+      done(new BffHttpError(413, "payload_too_large"));
+      return;
+    }
+    let seen = 0;
+    const counter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        seen += chunk.length;
+        if (seen > bodyLimit) {
+          tooLarge.add(request);
+          callback(new BffHttpError(413, "payload_too_large"));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    // The pipeline destroys both streams when either fails.
+    pipeline(payload, counter, () => undefined);
+    done(null, counter);
   });
   await scope.register(replyFrom, {
     base: upstream.url,
@@ -147,6 +174,10 @@ async function mountUpstream(
           Object.entries(headers).filter(([key]) => !dropResponseHeader(key)),
         ),
       onError: (res, { error }) => {
+        if (tooLarge.has(request)) {
+          void res.code(413).send({ error: "payload_too_large" });
+          return;
+        }
         res.log.warn({ err: error }, "upstream request failed");
         void res.code(502).send({ error: "bad_gateway" });
       },
@@ -165,7 +196,9 @@ async function mountUpstream(
  */
 const proxy: FastifyPluginAsync<BffConfig> = async (app, config) => {
   for (const [name, upstream] of Object.entries(config.upstreams)) {
-    await app.register(async (scope) => mountUpstream(scope, name, upstream));
+    await app.register(async (scope) =>
+      mountUpstream(scope, name, upstream, config.proxyBodyLimitBytes),
+    );
   }
 };
 
