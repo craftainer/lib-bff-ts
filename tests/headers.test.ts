@@ -103,6 +103,58 @@ describe("security headers", () => {
   });
 });
 
+describe("API_CACHE_CONTROL=upstream", () => {
+  async function cacheControl(sent: string | null): Promise<unknown> {
+    const bff = await make({ API_CACHE_CONTROL: "upstream" });
+    bff.app.get("/api/own", async (_request, reply) =>
+      sent === null
+        ? reply.send({})
+        : reply.header("Cache-Control", sent).send({}),
+    );
+    const res = await bff.app.inject({
+      method: "GET",
+      url: "/api/own",
+      headers: { "x-csrf": "1" },
+    });
+    return res.headers["cache-control"];
+  }
+
+  it("adds private to max-age and s-maxage", async () => {
+    expect(await cacheControl("max-age=60")).toBe("private, max-age=60");
+    expect(await cacheControl("s-maxage=60")).toBe("private, s-maxage=60");
+  });
+
+  it("rewrites public to private without adding a second one", async () => {
+    expect(await cacheControl("public, max-age=300")).toBe(
+      "private, max-age=300",
+    );
+  });
+
+  it("keeps private and no-store as sent", async () => {
+    expect(await cacheControl("private, max-age=60")).toBe(
+      "private, max-age=60",
+    );
+    expect(await cacheControl("no-store")).toBe("no-store");
+  });
+
+  it("does not mistake a quoted or field-scoped private for a bare one", async () => {
+    expect(await cacheControl('no-cache="private", max-age=60')).toBe(
+      'private, no-cache="private", max-age=60',
+    );
+    expect(await cacheControl('private="set-cookie", max-age=60')).toBe(
+      'private, private="set-cookie", max-age=60',
+    );
+    expect(await cacheControl("max-age=60, x-private-ext")).toBe(
+      "private, max-age=60, x-private-ext",
+    );
+    expect(await cacheControl("")).toBe("private");
+  });
+
+  it("defaults a missing header to no-store", async () => {
+    expect(await cacheControl(null)).toBe("no-store");
+  });
+});
+
 describe("HSTS", () => {
   it("is absent outside production", async () => {
     const bff = await make();

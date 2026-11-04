@@ -5,6 +5,9 @@ import { makeBff, testConfig, type TestBff } from "./helpers/bff.ts";
 const IDP = { issuer: "http://localhost:9" };
 const ORIGIN = "http://localhost:8080";
 
+/** An `Expires` that stays valid under RFC 9116 section 2.5.5 whenever the suite runs. */
+const soon = new Date(Date.now() + 100 * 24 * 60 * 60 * 1000).toISOString();
+
 let bff: TestBff | undefined;
 
 async function start(
@@ -52,7 +55,7 @@ describe("security.txt (RFC 9116)", () => {
     await start({
       SECURITY_TXT_CONTACT:
         "https://github.com/craftainer/x/security/advisories/new,mailto:sec@example.com",
-      SECURITY_TXT_EXPIRES: "2027-06-30T12:00:00Z",
+      SECURITY_TXT_EXPIRES: soon,
       SECURITY_TXT_POLICY: "https://example.com/policy",
       SECURITY_TXT_PREFERRED_LANGUAGES: "en, de",
       SECURITY_TXT_CANONICAL: "https://example.com/.well-known/security.txt",
@@ -64,7 +67,7 @@ describe("security.txt (RFC 9116)", () => {
       [
         "Contact: https://github.com/craftainer/x/security/advisories/new",
         "Contact: mailto:sec@example.com",
-        "Expires: 2027-06-30T12:00:00Z",
+        `Expires: ${soon}`,
         "Policy: https://example.com/policy",
         "Preferred-Languages: en, de",
         "Canonical: https://example.com/.well-known/security.txt",
@@ -97,17 +100,44 @@ describe("security.txt (RFC 9116)", () => {
       OIDC_ALLOW_INSECURE: "false",
       SESSION_STORE_URL: "rediss://valkey.example.com:6379",
       SECURITY_TXT_CONTACT: "mailto:sec@example.com",
-      SECURITY_TXT_EXPIRES: "2027-01-01T00:00:00Z",
+      SECURITY_TXT_EXPIRES: soon,
     });
     const res = await get("/.well-known/security.txt");
     expect(res.body).toBe(
       [
         "Contact: mailto:sec@example.com",
-        "Expires: 2027-01-01T00:00:00Z",
+        `Expires: ${soon}`,
         "Canonical: https://app.example.com/.well-known/security.txt",
         "",
       ].join("\n"),
     );
+  });
+
+  it("stops serving a configured Expires once it has passed, without failing boot", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-31T10:00:00.000Z"));
+    await start({
+      SECURITY_TXT_CONTACT: "mailto:sec@example.com",
+      SECURITY_TXT_EXPIRES: "2026-11-30T00:00:00.000Z",
+    });
+    expect((await get("/.well-known/security.txt")).statusCode).toBe(200);
+    vi.setSystemTime(new Date("2026-11-30T00:00:01.000Z"));
+    expect((await get("/.well-known/security.txt")).statusCode).toBe(404);
+  });
+
+  it("starts with an already-past or far-future Expires, warning and serving only the latter", async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const past = await start({
+      SECURITY_TXT_CONTACT: "mailto:sec@example.com",
+      SECURITY_TXT_EXPIRES: new Date(Date.now() - day).toISOString(),
+    });
+    expect((await get("/.well-known/security.txt")).statusCode).toBe(404);
+    await past.app.close();
+    await start({
+      SECURITY_TXT_CONTACT: "mailto:sec@example.com",
+      SECURITY_TXT_EXPIRES: new Date(Date.now() + 400 * day).toISOString(),
+    });
+    expect((await get("/.well-known/security.txt")).statusCode).toBe(200);
   });
 
   it("drops a field whose value would start another line", async () => {

@@ -103,11 +103,17 @@ ignore:
   # Each instance chooses its own license and copyright holder.
   - LICENSE
 
+  # Each package's README is entirely its own (name, usage, API); a merge
+  # against this template's README conflicted on every sync, so it is
+  # instance-owned from creation, like package.json.
+  - README.md
+
   # The package scaffold: an instance renames the package (to
   # @craftainer/<name>), owns its dependencies, entry points, code and tests,
   # so none of it can be synced. The tool configs are scaffold too: they
   # name this package's entries (tsdown.config.ts) and coverage scope.
   - package.json
+  - pnpm-workspace.yaml
   - tsconfig*.json
   - tsdown.config.ts
   - vitest.config.ts
@@ -151,9 +157,6 @@ ignore:
   - .github/template-sync-manifest.local.yml
 
 merge:
-  # Project identity (name/description) is interpolated per instance.
-  - README.md
-
   # Files with no include mechanism of their own (JSON configs, prek's
   # .pre-commit-config.yaml), and docs an instance appends to: a three-way
   # merge keeps the instance's additions.

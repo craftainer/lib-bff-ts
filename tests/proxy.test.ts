@@ -28,6 +28,7 @@ beforeAll(async () => {
   bff = await makeBff(idp, {
     store,
     env: {
+      BFF_PROXY_BODY_LIMIT_BYTES: "2048",
       BFF_UPSTREAMS: JSON.stringify({
         crud: { url: up.url, audience: "api", methods: ["GET", "POST"] },
         events: {
@@ -301,6 +302,92 @@ describe("request headers", () => {
       "analytics-consent": "1",
     });
     expect(last().headers["analytics-consent"]).toBeUndefined();
+  });
+
+  it("answers 413 for a Content-Length above the body cap, sending nothing upstream", async () => {
+    const before = up.seen.length;
+    for (const type of ["application/json", "application/octet-stream"]) {
+      const over = await bff.browser.request("POST", "/api/crud/items", {
+        csrf: true,
+        headers: { "content-type": type },
+        body: "x".repeat(2049),
+      });
+      expect(over.statusCode).toBe(413);
+      expect(over.json()).toEqual({ error: "payload_too_large" });
+    }
+    expect(up.seen.length).toBe(before);
+  });
+
+  it("relays a body of exactly the cap, streamed", async () => {
+    const at = await bff.browser.request("POST", "/api/crud/items", {
+      csrf: true,
+      headers: { "content-type": "application/octet-stream" },
+      body: "x".repeat(2048),
+    });
+    expect(at.statusCode).toBe(200);
+    expect(last().body).toHaveLength(2048);
+  });
+
+  it("aborts a chunked body over the cap with 413 and never completes it upstream", async () => {
+    await listening();
+    const { port } = bff.app.server.address() as { port: number };
+    const before = up.seen.length;
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/api/crud/items",
+          method: "POST",
+          headers: {
+            "x-csrf": "1",
+            cookie: `__Host-Http-session=${sessionId}`,
+            "content-type": "application/octet-stream",
+            "transfer-encoding": "chunked",
+          },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", reject);
+      req.write("x".repeat(1500));
+      req.write("x".repeat(1500));
+      req.end();
+    });
+    expect(status).toBe(413);
+    expect(up.seen.length).toBe(before);
+  });
+
+  it("answers a chunked body at the cap normally", async () => {
+    await listening();
+    const { port } = bff.app.server.address() as { port: number };
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/api/crud/items",
+          method: "POST",
+          headers: {
+            "x-csrf": "1",
+            cookie: `__Host-Http-session=${sessionId}`,
+            "content-type": "application/octet-stream",
+            "transfer-encoding": "chunked",
+          },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", reject);
+      req.write("x".repeat(1024));
+      req.end("x".repeat(1024));
+    });
+    expect(status).toBe(200);
+    expect(last().body).toHaveLength(2048);
   });
 
   it("relays request bodies byte for byte, for any content type", async () => {

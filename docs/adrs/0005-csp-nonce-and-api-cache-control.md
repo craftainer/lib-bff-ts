@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The `API_CACHE_CONTROL=upstream` rule is amended by
+[0006](0006-api-cache-control-private.md).
 
 ## Context
 

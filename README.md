@@ -106,15 +106,16 @@ All configuration is read by `loadConfig(env)`; there is no `SESSION_SECRET`
 
 ### Server and proxy
 
-| Variable            | Default    | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`          | unset      | `production` turns on HSTS and the production-only rules below.                                                                                                                                                                                                                                                                                                                                                                        |
-| `BFF_PORT`          | `8080`     | 1 to 65535.                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `BFF_HOST`          | `0.0.0.0`  | Bind address (used by your `listen()` call).                                                                                                                                                                                                                                                                                                                                                                                           |
-| `BFF_STATIC_DIR`    | unset      | Directory of the built SPA. Unset: no static files, only the JSON 404.                                                                                                                                                                                                                                                                                                                                                                 |
-| `PUBLIC_ORIGIN`     | required   | The browser-facing origin: `https://host[:port]`, no path, query or credentials. `http` only for `localhost` outside production. It derives `redirect_uri`, the Origin check and HSTS; the `Host` header is never used.                                                                                                                                                                                                                |
-| `BFF_TRUST_PROXY`   | `false`    | Fastify `trustProxy`, which sets `request.ip` and so the rate-limit buckets and logs. `true` (trust every hop; a client can then forge `X-Forwarded-For`, so avoid), `false`, a hop count (e.g. `1`), or a comma-separated list of IPs / CIDRs / `loopback`, `linklocal`, `uniquelocal`. Behind a reverse proxy prefer a hop count or the proxy's address range. With `false`, all clients behind a proxy share one rate-limit bucket. |
-| `API_CACHE_CONTROL` | `no-store` | `no-store` forces `Cache-Control: no-store` on every `/api/*` response. `upstream` passes an upstream-sent `Cache-Control` through (`public` is rewritten to `private`) and sets `no-store` only when there is none. Trade-off in [ADR 0005](docs/adrs/0005-csp-nonce-and-api-cache-control.md) (ASVS 14.3.2). Anything else is rejected.                                                                                              |
+| Variable                     | Default    | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NODE_ENV`                   | unset      | `production` turns on HSTS and the production-only rules below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `BFF_PORT`                   | `8080`     | 1 to 65535.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `BFF_HOST`                   | `0.0.0.0`  | Bind address (used by your `listen()` call).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `BFF_STATIC_DIR`             | unset      | Directory of the built SPA. Unset: no static files, only the JSON 404.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `PUBLIC_ORIGIN`              | required   | The browser-facing origin: `https://host[:port]`, no path, query or credentials. `http` only for `localhost` outside production. It derives `redirect_uri`, the Origin check and HSTS; the `Host` header is never used.                                                                                                                                                                                                                                                                                                              |
+| `BFF_TRUST_PROXY`            | `false`    | Fastify `trustProxy`, which sets `request.ip` and so the rate-limit buckets and logs. `true` (trust every hop; a client can then forge `X-Forwarded-For`, so avoid), `false`, a hop count (e.g. `1`), or a comma-separated list of IPs / CIDRs / `loopback`, `linklocal`, `uniquelocal`. Behind a reverse proxy prefer a hop count or the proxy's address range. With `false`, all clients behind a proxy share one rate-limit bucket.                                                                                               |
+| `API_CACHE_CONTROL`          | `no-store` | `no-store` forces `Cache-Control: no-store` on every `/api/*` response. `upstream` passes an upstream-sent `Cache-Control` through, always as `private`: `public` is rewritten to `private`, and `private` is added unless `private` or `no-store` is already there (RFC 9111 section 5.2.2.7). It sets `no-store` only when there is none. Trade-off in [ADR 0005](docs/adrs/0005-csp-nonce-and-api-cache-control.md), amended by [ADR 0006](docs/adrs/0006-api-cache-control-private.md) (ASVS 14.3.2). Anything else is rejected. |
+| `BFF_PROXY_BODY_LIMIT_BYTES` | `10485760` | Largest request body the proxy relays to an upstream; a larger one gets `413` (a `Content-Length` above it is refused before anything goes upstream; a longer chunked body is aborted mid-stream). Bodies are streamed, not buffered. Max 1073741824.                                                                                                                                                                                                                                                                                |
 
 ### Content-Security-Policy and the nonce
 
@@ -163,14 +164,14 @@ files keep their caching. See [ADR 0005](docs/adrs/0005-csp-nonce-and-api-cache-
 
 ### Well-known endpoints
 
-| Variable                           | Notes                                                                                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `SECURITY_TXT_CONTACT`             | Comma-separated; each entry an `https:`, `mailto:` or `tel:` URI. `security.txt` is served only when this is set.   |
-| `SECURITY_TXT_EXPIRES`             | ISO 8601 date-time. **Required in production** when a contact is set. Otherwise it defaults to startup + 364 days.  |
-| `SECURITY_TXT_POLICY`              | URI of the disclosure policy.                                                                                       |
-| `SECURITY_TXT_PREFERRED_LANGUAGES` | e.g. `en, de`.                                                                                                      |
-| `SECURITY_TXT_CANONICAL`           | Default `<PUBLIC_ORIGIN>/.well-known/security.txt`.                                                                 |
-| `CHANGE_PASSWORD_URL`              | https URL (http only with `OIDC_ALLOW_INSECURE`). `/.well-known/change-password` answers `302` to it only when set. |
+| Variable                           | Notes                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SECURITY_TXT_CONTACT`             | Comma-separated; each entry an `https:`, `mailto:` or `tel:` URI. `security.txt` is served only when this is set.                                                                                                                                                                                                          |
+| `SECURITY_TXT_EXPIRES`             | ISO 8601 date-time; RFC 9116 wants it in the future and less than a year ahead. A past date logs a warning and `security.txt` answers 404 until it is renewed (boot does not fail); a date a year or more ahead only warns. **Required in production** when a contact is set. Otherwise it defaults to startup + 364 days. |
+| `SECURITY_TXT_POLICY`              | URI of the disclosure policy.                                                                                                                                                                                                                                                                                              |
+| `SECURITY_TXT_PREFERRED_LANGUAGES` | e.g. `en, de`.                                                                                                                                                                                                                                                                                                             |
+| `SECURITY_TXT_CANONICAL`           | Default `<PUBLIC_ORIGIN>/.well-known/security.txt`.                                                                                                                                                                                                                                                                        |
+| `CHANGE_PASSWORD_URL`              | Parseable https URL of printable ASCII (no spaces, line breaks or non-ASCII; percent-encode them) (http only with `OIDC_ALLOW_INSECURE`). `/.well-known/change-password` answers `302` to it only when set.                                                                                                                |
 
 Every `SECURITY_TXT_*` value is rejected by `loadConfig` if it contains a CR
 or LF (a line break would start a new `security.txt` field).
@@ -303,8 +304,8 @@ invalid_path`. The body is streamed byte for byte, any content type.
 - Upstream `Set-Cookie`, `Strict-Transport-Security` and `Access-Control-*`
   response headers are removed. Responses carry `Cache-Control: no-store`
   whatever the upstream said (with `API_CACHE_CONTROL=upstream`, an
-  upstream's own `Cache-Control` is kept and only a missing one becomes
-  `no-store`), and the BFF's security headers.
+  upstream's own `Cache-Control` is kept but made `private`, and only a
+  missing one becomes `no-store`), and the BFF's security headers.
 - An unreachable upstream answers `502 bad_gateway`.
 
 ## Security events
@@ -352,11 +353,21 @@ OIDC, with provenance), with no token stored:
    version is not installable, and `make verify-published` (the release
    workflow's last job, after the GitHub release exists) fails saying so;
    re-run that job after approving.
-3. On npmjs.com, add the package's trusted publisher (this repository,
-   workflow `release.yml`), then delete the `NPM_TOKEN` secret. Later
-   releases publish directly through OIDC; npm expires a trusted-publisher
-   configuration that has not published within 48 hours, so do this just
-   before the next release.
+3. On npmjs.com, add the package's trusted publisher: this repository,
+   workflow `release.yml`, environment `release`. The environment field is
+   the binding control: it limits OIDC publishing to jobs that declare
+   `environment: release`, which template-base's `release.yml` does for its
+   privileged jobs (with a deployment-branch rule allowing only the default
+   branch). Then take the repository out of the `NPM_TOKEN` secret's reach.
+   A present `NPM_TOKEN` is preferred over OIDC (`release-publish.sh` stages
+   with it and never tries OIDC), so the token must not reach the repository
+   for trusted publishing to engage. If `NPM_TOKEN` is an organization
+   secret, you cannot delete it from here: change its repository access
+   (organization Settings > Secrets and variables > Actions) to exclude this
+   repository, or delete a repository-level copy. Later releases publish
+   directly through OIDC; npm expires a trusted-publisher configuration that
+   has not published within 48 hours, so do this just before the next
+   release.
 
 The version lives only in the git tag `release.yml` computes;
 `package.json` stays at `0.0.0` and `make build` stamps `RELEASE_VERSION`

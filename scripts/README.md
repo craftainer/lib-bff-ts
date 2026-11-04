@@ -7,20 +7,27 @@
   copying its shape into a second script. Prefer the hook below over
   either. Every download goes through its `fetch` helper (bounded curl
   retries with backoff; GitHub URLs authenticated when the optional
-  `github_token` BuildKit secret is present) and the installers
-  that download for themselves run through `retry` (the installer script
-  itself is fetched once, by `fetch`, so the two layers of retries do not
-  multiply; a failed download names the installer and URL before the script
-  aborts, an empty one is rejected, and `fetch` itself retries DNS and
+  `github_token` BuildKit secret is present) and the one tool that
+  downloads for itself (`uv python install`) runs through `retry` (never
+  around a `fetch`, so the two layers of retries do not multiply; a failed
+  download names what failed and the URL before the script aborts, and
+  `fetch` itself retries DNS and
   connect failures (curl exit 6/7) and truncated transfers (18/52/55/56) up
   to 4 times; timeouts are left to curl's own `--retry`), so CI's shared-IP
   HTTP 429s don't fail the image build. Local builds need no token.
+  No vendor install script is run: `uv` and `prek` are release tarballs
+  checked against the `.sha256` published beside them (`fetch_checked`),
+  and Claude Code's binary is checked against its GPG-signed
+  `manifest.json` (key fingerprint pinned in `claude_signing_fpr`); see
+  `../docs/TEMPLATE.md`'s "Supply chain and release hardening".
 - `post-create.sh` — the devcontainer's `postCreateCommand`: git
   `safe.directory`, `prek install`, then every `post-create.d/*.sh`.
 - `release-*.sh` — the release logic behind the `Makefile` targets (see
   `docs/TEMPLATE.md`, "Package template notes"). `release-lib.sh` (sourced)
-  pins the npm and Syft versions; `release-run.sh` runs a script on the
-  host, or in the pinned Node image when the host has no pnpm;
+  pins the npm version and the Node and Syft images (tag plus digest,
+  bumped by Renovate); `release-run.sh` runs a script on the host, or in the
+  pinned Node image when the host has no pnpm, forwarding only an explicit
+  allowlist of variables (the publish credentials only to `release-publish.sh`);
   `release-build.sh` stamps the version, builds and packs into `dist/`;
   `release-sbom.sh` (+ `release-sbom-install.sh`, `release-field.sh`) writes the SPDX SBOM;
   `release-publish.sh` (`make publish-packages`; `make publish` is a no-op) skips (with a `::warning::`), first checks
@@ -54,6 +61,14 @@
   follows.
 - Keep `NPM_VERSION` in `release-lib.sh` at 11.15.0 or later (staged
   publishing) and pin it exactly, with its `# renovate:` marker.
+- Pin container images in `release-lib.sh` by tag and digest
+  (`NODE_IMAGE`, `SYFT_IMAGE`) with their `# renovate:` marker.
+- Forward variables into the release container by name from an allowlist in
+  `release-run.sh`; never a `GITHUB_*`/`ACTIONS_*` prefix match for steps
+  that run dependency code. The one exception is `release-publish.sh`, which
+  runs none (a tarball upload with a pinned npm) and gets the job
+  environment minus `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RESULTS_URL`
+  and `ACTIONS_CACHE_URL`, because npm reads an undocumented set of names for provenance.
 
 ## Don't
 

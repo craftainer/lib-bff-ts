@@ -57,14 +57,14 @@
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
     "@fastify/formbody": "^9.0.1",
-    "@fastify/rate-limit": "^11.2.1",
-    "@fastify/reply-from": "^12.8.0",
+    "@fastify/rate-limit": "^11.2.2",
+    "@fastify/reply-from": "^12.8.1",
     "@fastify/static": "^10.1.8",
-    "fastify": "^5.12.7",
+    "fastify": "^5.12.8",
     "fastify-plugin": "^6.0.1",
     "iovalkey": "^0.4.0",
-    "jose": "^6.2.14",
-    "openid-client": "^6.8.8",
+    "jose": "^6.2.15",
+    "openid-client": "^6.8.9",
     "zod": "^4.6.7"
   },
   "peerDependencies": {

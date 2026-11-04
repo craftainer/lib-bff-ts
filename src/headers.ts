@@ -84,6 +84,22 @@ function isDynamic(path: string): boolean {
  * so they get `Cache-Control: no-store`; BFF routes may choose their own
  * policy. A request with a `cspNonce` gets the nonce policy.
  */
+/**
+ * Makes sure a Cache-Control value carries a bare `private` or `no-store`
+ * directive. Quoted arguments are ignored (`no-cache="private"` is not
+ * `private`), and `private="x"` only covers the named fields, so it does not count.
+ */
+function withPrivate(value: string): string {
+  const directives = value
+    .replace(/"[^"]*"/g, '""')
+    .split(",")
+    .map((d) => d.trim().toLowerCase());
+  if (directives.includes("private") || directives.includes("no-store")) {
+    return value;
+  }
+  return value.trim() === "" ? "private" : `private, ${value}`;
+}
+
 const headers: FastifyPluginAsync<BffConfig> = async (app, config) => {
   const hsts =
     config.production && config.publicOrigin.startsWith("https://")
@@ -113,11 +129,11 @@ const headers: FastifyPluginAsync<BffConfig> = async (app, config) => {
       if (config.apiCacheControl === "no-store" || upstream === undefined) {
         void reply.header("Cache-Control", "no-store");
       } else {
-        // A shared cache must never store per-user data: `public` -> `private`.
-        void reply.header(
-          "Cache-Control",
-          String(upstream).replace(/\bpublic\b/gi, "private"),
-        );
+        // A shared cache must never store per-user data: `public` -> `private`
+        // (RFC 9111 section 5.2.2.7), and `private` is added unless the
+        // upstream already sent `private` or `no-store`.
+        const value = String(upstream).replace(/\bpublic\b/gi, "private");
+        void reply.header("Cache-Control", withPrivate(value));
       }
     } else if (
       isDynamic(path) &&
