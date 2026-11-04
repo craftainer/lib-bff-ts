@@ -82,9 +82,12 @@ export interface BffConfig {
   /**
    * `/api/*` Cache-Control policy. `no-store` (default) forces it on every
    * response; `upstream` lets an upstream-sent Cache-Control through
-   * unchanged and sets `no-store` only when there is none.
+   * (always `private`, never `public`) and sets `no-store` only when
+   * there is none.
    */
   apiCacheControl: "no-store" | "upstream";
+  /** Largest request body, in bytes, the proxy relays to an upstream (413 above it). */
+  proxyBodyLimitBytes: number;
   oidc: {
     issuer: string;
     /** Full `.../.well-known/openid-configuration` URL. */
@@ -274,6 +277,7 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: positiveInt(20, 100_000),
   RATE_LIMIT_WINDOW_SECONDS: positiveInt(60, 86_400),
   BFF_UPSTREAMS: optionalString,
+  BFF_PROXY_BODY_LIMIT_BYTES: positiveInt(10 * 1024 * 1024, 1024 * 1024 * 1024),
   SECURITY_TXT_CONTACT: list,
   SECURITY_TXT_EXPIRES: optionalString,
   SECURITY_TXT_POLICY: optionalString,
@@ -432,6 +436,10 @@ function checkSecurityTxt(
       issues.push(`${name}: must not contain line breaks`);
     }
   }
+  // Only the syntax is checked here. Whether the date is in the future and
+  // under a year ahead changes with the clock, so the well-known plugin
+  // handles it (warns, and stops serving an expired file) instead of
+  // failing boot on a restart long after the date was set.
   if (
     env.SECURITY_TXT_EXPIRES !== undefined &&
     !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES)
@@ -504,8 +512,12 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
   checkSecurityTxt(e, production, issues);
   if (
     e.CHANGE_PASSWORD_URL !== undefined &&
-    !e.CHANGE_PASSWORD_URL.startsWith("https://") &&
-    !(e.OIDC_ALLOW_INSECURE && e.CHANGE_PASSWORD_URL.startsWith("http://"))
+    (/[^\x21-\x7e]/.test(e.CHANGE_PASSWORD_URL) ||
+      !URL.canParse(e.CHANGE_PASSWORD_URL) ||
+      (!e.CHANGE_PASSWORD_URL.startsWith("https://") &&
+        !(
+          e.OIDC_ALLOW_INSECURE && e.CHANGE_PASSWORD_URL.startsWith("http://")
+        )))
   ) {
     issues.push("CHANGE_PASSWORD_URL: must be an https URL");
   }
@@ -521,6 +533,7 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
     publicOrigin: origin,
     trustProxy: e.BFF_TRUST_PROXY,
     apiCacheControl: e.API_CACHE_CONTROL,
+    proxyBodyLimitBytes: e.BFF_PROXY_BODY_LIMIT_BYTES,
     oidc: {
       issuer: e.OIDC_ISSUER,
       discoveryUrl,
