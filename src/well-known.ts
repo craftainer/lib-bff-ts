@@ -86,7 +86,7 @@ const wellKnown: FastifyPluginAsync<BffConfig> = async (app, config) => {
         app.log.warn(
           "SECURITY_TXT_EXPIRES is in the past: security.txt is not served until it is renewed",
         );
-      } else if (expiresAt - Date.now() >= 366 * DAY_MS) {
+      } else if (expiresAt - Date.now() >= 365 * DAY_MS) {
         app.log.warn(
           "SECURITY_TXT_EXPIRES is a year or more ahead (RFC 9116 recommends less)",
         );

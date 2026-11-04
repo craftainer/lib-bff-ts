@@ -512,7 +512,7 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
   checkSecurityTxt(e, production, issues);
   if (
     e.CHANGE_PASSWORD_URL !== undefined &&
-    (/[\r\n]/.test(e.CHANGE_PASSWORD_URL) ||
+    (/[^\x21-\x7e]/.test(e.CHANGE_PASSWORD_URL) ||
       !URL.canParse(e.CHANGE_PASSWORD_URL) ||
       (!e.CHANGE_PASSWORD_URL.startsWith("https://") &&
         !(

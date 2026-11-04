@@ -358,6 +358,8 @@ describe("loadConfig", () => {
     for (const value of [
       "https://",
       "https://idp.example/a\r\nSet-Cookie: x=1",
+      "https://idp.example/\u00e4",
+      "https://idp.example/a b",
     ]) {
       expect(issues({ ...base, CHANGE_PASSWORD_URL: value })).toEqual([
         "CHANGE_PASSWORD_URL: must be an https URL",

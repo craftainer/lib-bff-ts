@@ -137,6 +137,19 @@ describe("API_CACHE_CONTROL=upstream", () => {
     expect(await cacheControl("no-store")).toBe("no-store");
   });
 
+  it("does not mistake a quoted or field-scoped private for a bare one", async () => {
+    expect(await cacheControl('no-cache="private", max-age=60')).toBe(
+      'private, no-cache="private", max-age=60',
+    );
+    expect(await cacheControl('private="set-cookie", max-age=60')).toBe(
+      'private, private="set-cookie", max-age=60',
+    );
+    expect(await cacheControl("max-age=60, x-private-ext")).toBe(
+      "private, max-age=60, x-private-ext",
+    );
+    expect(await cacheControl("")).toBe("private");
+  });
+
   it("defaults a missing header to no-store", async () => {
     expect(await cacheControl(null)).toBe("no-store");
   });
