@@ -82,9 +82,12 @@ export interface BffConfig {
   /**
    * `/api/*` Cache-Control policy. `no-store` (default) forces it on every
    * response; `upstream` lets an upstream-sent Cache-Control through
-   * unchanged and sets `no-store` only when there is none.
+   * (always `private`, never `public`) and sets `no-store` only when
+   * there is none.
    */
   apiCacheControl: "no-store" | "upstream";
+  /** Largest request body, in bytes, the proxy relays to an upstream (413 above it). */
+  proxyBodyLimitBytes: number;
   oidc: {
     issuer: string;
     /** Full `.../.well-known/openid-configuration` URL. */
@@ -274,6 +277,7 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: positiveInt(20, 100_000),
   RATE_LIMIT_WINDOW_SECONDS: positiveInt(60, 86_400),
   BFF_UPSTREAMS: optionalString,
+  BFF_PROXY_BODY_LIMIT_BYTES: positiveInt(10 * 1024 * 1024, 1024 * 1024 * 1024),
   SECURITY_TXT_CONTACT: list,
   SECURITY_TXT_EXPIRES: optionalString,
   SECURITY_TXT_POLICY: optionalString,
@@ -432,12 +436,21 @@ function checkSecurityTxt(
       issues.push(`${name}: must not contain line breaks`);
     }
   }
-  if (
-    env.SECURITY_TXT_EXPIRES !== undefined &&
-    !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES)
-      .success
-  ) {
-    issues.push("SECURITY_TXT_EXPIRES: must be an ISO 8601 date-time");
+  if (env.SECURITY_TXT_EXPIRES !== undefined) {
+    if (
+      !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES)
+        .success
+    ) {
+      issues.push("SECURITY_TXT_EXPIRES: must be an ISO 8601 date-time");
+    } else {
+      // RFC 9116 section 2.5.5: in the future, and less than a year ahead.
+      const ms = Date.parse(env.SECURITY_TXT_EXPIRES) - Date.now();
+      if (ms <= 0 || ms >= 366 * 24 * 60 * 60 * 1000) {
+        issues.push(
+          "SECURITY_TXT_EXPIRES: must be in the future and less than a year ahead (RFC 9116)",
+        );
+      }
+    }
   }
   if (
     production &&
@@ -504,8 +517,12 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
   checkSecurityTxt(e, production, issues);
   if (
     e.CHANGE_PASSWORD_URL !== undefined &&
-    !e.CHANGE_PASSWORD_URL.startsWith("https://") &&
-    !(e.OIDC_ALLOW_INSECURE && e.CHANGE_PASSWORD_URL.startsWith("http://"))
+    (/[\r\n]/.test(e.CHANGE_PASSWORD_URL) ||
+      !URL.canParse(e.CHANGE_PASSWORD_URL) ||
+      (!e.CHANGE_PASSWORD_URL.startsWith("https://") &&
+        !(
+          e.OIDC_ALLOW_INSECURE && e.CHANGE_PASSWORD_URL.startsWith("http://")
+        )))
   ) {
     issues.push("CHANGE_PASSWORD_URL: must be an https URL");
   }
@@ -521,6 +538,7 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
     publicOrigin: origin,
     trustProxy: e.BFF_TRUST_PROXY,
     apiCacheControl: e.API_CACHE_CONTROL,
+    proxyBodyLimitBytes: e.BFF_PROXY_BODY_LIMIT_BYTES,
     oidc: {
       issuer: e.OIDC_ISSUER,
       discoveryUrl,

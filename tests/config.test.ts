@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ConfigError, loadConfig } from "../src/config.ts";
 
+/** An `Expires` that stays valid under RFC 9116 section 2.5.5 whenever the suite runs. */
+const soon = new Date(Date.now() + 100 * 24 * 60 * 60 * 1000).toISOString();
+
 const base = {
   PUBLIC_ORIGIN: "https://app.example.com",
   OIDC_ISSUER: "https://idp.example.com/realms/x",
@@ -95,7 +98,7 @@ describe("loadConfig", () => {
       }),
       SECURITY_TXT_CONTACT:
         "https://example.com/report, mailto:sec@example.com",
-      SECURITY_TXT_EXPIRES: "2027-01-01T00:00:00Z",
+      SECURITY_TXT_EXPIRES: soon,
       SECURITY_TXT_POLICY: "https://example.com/policy",
       SECURITY_TXT_PREFERRED_LANGUAGES: "en",
       SECURITY_TXT_CANONICAL:
@@ -338,6 +341,48 @@ describe("loadConfig", () => {
         ANALYTICS_SITE_ID: "x",
       }).analytics.backend,
     ).toBe("umami");
+  });
+
+  it("rejects a SECURITY_TXT_EXPIRES in the past or a year or more ahead (RFC 9116)", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const msg =
+      "SECURITY_TXT_EXPIRES: must be in the future and less than a year ahead (RFC 9116)";
+    for (const offset of [-day, 400 * day]) {
+      expect(
+        issues({
+          ...base,
+          SECURITY_TXT_EXPIRES: new Date(Date.now() + offset).toISOString(),
+        }),
+      ).toEqual([msg]);
+    }
+    expect(
+      loadConfig({
+        ...base,
+        SECURITY_TXT_EXPIRES: new Date(Date.now() + 300 * day).toISOString(),
+      }).securityTxt.expires,
+    ).not.toBeNull();
+  });
+
+  it("rejects an unparseable or line-broken CHANGE_PASSWORD_URL", () => {
+    for (const value of [
+      "https://",
+      "https://idp.example/a\r\nSet-Cookie: x=1",
+    ]) {
+      expect(issues({ ...base, CHANGE_PASSWORD_URL: value })).toEqual([
+        "CHANGE_PASSWORD_URL: must be an https URL",
+      ]);
+    }
+  });
+
+  it("reads and bounds BFF_PROXY_BODY_LIMIT_BYTES", () => {
+    expect(loadConfig(base).proxyBodyLimitBytes).toBe(10 * 1024 * 1024);
+    expect(
+      loadConfig({ ...base, BFF_PROXY_BODY_LIMIT_BYTES: "4096" })
+        .proxyBodyLimitBytes,
+    ).toBe(4096);
+    expect(issues({ ...base, BFF_PROXY_BODY_LIMIT_BYTES: "0" })).toHaveLength(
+      1,
+    );
   });
 
   it("validates security.txt and the change-password URL", () => {
