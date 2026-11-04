@@ -65,9 +65,7 @@
   `../../scripts/develop.sh` never nests `fetch` inside `retry`, verifies
   downloads with `fetch_checked`/`install_claude`, and runs no installer script, and
   that `release.yml` gates its privileged jobs on the default branch;
-  `scripts-tests` runs it. `test_release_pins.py` fails a PR where
-  `../../scripts/release-lib.sh`'s `NODE_IMAGE` tag differs from
-  `../../.devcontainer/Dockerfile`'s `NODE_VERSION`. Keep
+  `scripts-tests` runs it. Keep
   `assemble_dist.py` clean under `ruff check --select ALL` (bar `COM812` and
   `CPY001`), so instances that select `PL` etc. need no per-file ignores.
   `template_sync.py` and its test keep to a 100-column line length and name
@@ -91,6 +89,12 @@
   that label the test fails until you look up the new image's `python3`
   (actions/runner-images) and update `RUNNER_IMAGE_PYTHON`, `RUNNER_PYTHON` and
   `ruff.toml` together.
+- Formatting: base has no ruff dependency of its own, so `ruff-check`/`ruff-format`
+  from `astral-sh/ruff-pre-commit` in `../../.pre-commit-config.yaml`, scoped
+  to `^\.github/scripts/.*\.py$`, keep these scripts formatted to `ruff.toml`.
+  Unformatted scripts would otherwise fail every Python instance's own
+  `ruff format` hook after a sync. Keep that hook's `rev` equal to the ruff
+  the Python templates pin.
 - `test_moderate_labels.py` — checks that every `create "<name>" "<color>"
   "<description>"` line in `../workflows/moderate-setup.yml` has a description
   of at most 100 characters (GitHub answers HTTP 422 to a longer one, and only
