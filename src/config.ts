@@ -436,21 +436,16 @@ function checkSecurityTxt(
       issues.push(`${name}: must not contain line breaks`);
     }
   }
-  if (env.SECURITY_TXT_EXPIRES !== undefined) {
-    if (
-      !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES)
-        .success
-    ) {
-      issues.push("SECURITY_TXT_EXPIRES: must be an ISO 8601 date-time");
-    } else {
-      // RFC 9116 section 2.5.5: in the future, and less than a year ahead.
-      const ms = Date.parse(env.SECURITY_TXT_EXPIRES) - Date.now();
-      if (ms <= 0 || ms >= 366 * 24 * 60 * 60 * 1000) {
-        issues.push(
-          "SECURITY_TXT_EXPIRES: must be in the future and less than a year ahead (RFC 9116)",
-        );
-      }
-    }
+  // Only the syntax is checked here. Whether the date is in the future and
+  // under a year ahead changes with the clock, so the well-known plugin
+  // handles it (warns, and stops serving an expired file) instead of
+  // failing boot on a restart long after the date was set.
+  if (
+    env.SECURITY_TXT_EXPIRES !== undefined &&
+    !z.iso.datetime({ offset: true }).safeParse(env.SECURITY_TXT_EXPIRES)
+      .success
+  ) {
+    issues.push("SECURITY_TXT_EXPIRES: must be an ISO 8601 date-time");
   }
   if (
     production &&

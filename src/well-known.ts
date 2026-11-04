@@ -73,8 +73,29 @@ const wellKnown: FastifyPluginAsync<BffConfig> = async (app, config) => {
   if (config.securityTxt.contact.some(isSingleLine)) {
     // Computed once at startup, so the default `Expires` is stable between requests.
     const body = securityTxt(config, new Date());
+    // A configured date is fixed text, so it can lapse while the process runs
+    // (or before it starts). RFC 9116 section 2.5.5: an expired file is stale,
+    // so it is dropped (404) rather than crashing the BFF; a date a year or
+    // more ahead only draws a warning, because "less than a year" is a SHOULD.
+    const expiresAt =
+      config.securityTxt.expires === null
+        ? null
+        : Date.parse(config.securityTxt.expires);
+    if (expiresAt !== null) {
+      if (expiresAt <= Date.now()) {
+        app.log.warn(
+          "SECURITY_TXT_EXPIRES is in the past: security.txt is not served until it is renewed",
+        );
+      } else if (expiresAt - Date.now() >= 366 * DAY_MS) {
+        app.log.warn(
+          "SECURITY_TXT_EXPIRES is a year or more ahead (RFC 9116 recommends less)",
+        );
+      }
+    }
     app.get("/.well-known/security.txt", async (_request, reply) =>
-      reply.type("text/plain; charset=utf-8").send(body),
+      expiresAt !== null && expiresAt <= Date.now()
+        ? reply.callNotFound()
+        : reply.type("text/plain; charset=utf-8").send(body),
     );
   }
 

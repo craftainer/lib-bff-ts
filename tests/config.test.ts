@@ -343,24 +343,15 @@ describe("loadConfig", () => {
     ).toBe("umami");
   });
 
-  it("rejects a SECURITY_TXT_EXPIRES in the past or a year or more ahead (RFC 9116)", () => {
+  it("accepts any well-formed SECURITY_TXT_EXPIRES, so a lapsed date never fails boot", () => {
     const day = 24 * 60 * 60 * 1000;
-    const msg =
-      "SECURITY_TXT_EXPIRES: must be in the future and less than a year ahead (RFC 9116)";
-    for (const offset of [-day, 400 * day]) {
+    for (const offset of [-day, 300 * day, 400 * day]) {
+      const expires = new Date(Date.now() + offset).toISOString();
       expect(
-        issues({
-          ...base,
-          SECURITY_TXT_EXPIRES: new Date(Date.now() + offset).toISOString(),
-        }),
-      ).toEqual([msg]);
+        loadConfig({ ...base, SECURITY_TXT_EXPIRES: expires }).securityTxt
+          .expires,
+      ).toBe(expires);
     }
-    expect(
-      loadConfig({
-        ...base,
-        SECURITY_TXT_EXPIRES: new Date(Date.now() + 300 * day).toISOString(),
-      }).securityTxt.expires,
-    ).not.toBeNull();
   });
 
   it("rejects an unparseable or line-broken CHANGE_PASSWORD_URL", () => {
