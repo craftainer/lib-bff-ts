@@ -113,10 +113,13 @@ const headers: FastifyPluginAsync<BffConfig> = async (app, config) => {
       if (config.apiCacheControl === "no-store" || upstream === undefined) {
         void reply.header("Cache-Control", "no-store");
       } else {
-        // A shared cache must never store per-user data: `public` -> `private`.
+        // A shared cache must never store per-user data: `public` -> `private`
+        // (RFC 9111 section 5.2.2.7), and `private` is added unless the
+        // upstream already sent `private` or `no-store`.
+        const value = String(upstream).replace(/\bpublic\b/gi, "private");
         void reply.header(
           "Cache-Control",
-          String(upstream).replace(/\bpublic\b/gi, "private"),
+          /\b(?:private|no-store)\b/i.test(value) ? value : `private, ${value}`,
         );
       }
     } else if (
