@@ -1,5 +1,3 @@
 # Instance-owned paths this repo adds beyond the template's manifest
 # ("ignore" tier only; read by the completeness check, never by sync).
-ignore:
-  # Temporary osv-scanner ignores for transitive advisories (LB1).
-  - osv-scanner.toml
+ignore: []

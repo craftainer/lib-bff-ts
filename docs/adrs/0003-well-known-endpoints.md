@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The default `security.txt` `Expires` rule is amended by
+[0007](0007-security-txt-daily-expires.md).
 
 ## Context
 
