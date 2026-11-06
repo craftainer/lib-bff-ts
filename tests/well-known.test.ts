@@ -107,6 +107,32 @@ describe("security.txt (RFC 9116)", () => {
     expect(first).toBe("2027-10-30T00:00:00.000Z");
   });
 
+  it("rebuilds the whole default body after several days and keeps a configured Expires fixed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-31T10:00:00.000Z"));
+    await start({ SECURITY_TXT_CONTACT: "mailto:sec@example.com" });
+    await get("/.well-known/security.txt");
+    vi.setSystemTime(new Date("2027-11-05T10:00:00.000Z"));
+    expect((await get("/.well-known/security.txt")).body).toBe(
+      [
+        "Contact: mailto:sec@example.com",
+        "Expires: 2028-11-03T00:00:00.000Z",
+        `Canonical: ${ORIGIN}/.well-known/security.txt`,
+        "",
+      ].join("\n"),
+    );
+    await bff?.app.close();
+    vi.setSystemTime(new Date("2026-10-31T10:00:00.000Z"));
+    await start({
+      SECURITY_TXT_CONTACT: "mailto:sec@example.com",
+      SECURITY_TXT_EXPIRES: "2027-01-01T00:00:00.000Z",
+    });
+    vi.setSystemTime(new Date("2026-11-02T10:00:00.000Z"));
+    expect((await get("/.well-known/security.txt")).body).toContain(
+      "Expires: 2027-01-01T00:00:00.000Z",
+    );
+  });
+
   it("serves the configured Expires verbatim in production (where config requires one)", async () => {
     await start({
       NODE_ENV: "production",
