@@ -49,6 +49,10 @@ export interface TestIdp {
     delayMs: number;
     issuedTokenType: string | undefined;
     tokenType: string;
+    /** Answer 200 with this raw (non-JSON) body. */
+    raw: string | undefined;
+    /** Issue a signed JWT with this `aud` (omitted when `undefined`) instead of an opaque token. */
+    jwt: { aud: string | string[] | undefined } | undefined;
   };
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
@@ -186,6 +190,8 @@ export async function startIdp(
     delayMs: 0,
     issuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
     tokenType: "Bearer",
+    raw: undefined,
+    jwt: undefined,
   };
   provider.registerGrantType(
     TOKEN_EXCHANGE,
@@ -222,9 +228,24 @@ export async function startIdp(
         gty: TOKEN_EXCHANGE,
         scope: subject.scope,
       });
+      if (exchange.raw !== undefined) {
+        ctx.status = 200;
+        ctx.type = "text/plain";
+        ctx.body = exchange.raw;
+        return;
+      }
       const value = exchange.echo
         ? (params["subject_token"] as string)
-        : await token.save();
+        : exchange.jwt !== undefined
+          ? await new SignJWT({
+              sub: subject.accountId,
+              ...(exchange.jwt.aud === undefined
+                ? {}
+                : { aud: exchange.jwt.aud }),
+            })
+              .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+              .sign(privateKey)
+          : await token.save();
       ctx.body = {
         access_token: value,
         token_type: exchange.tokenType,

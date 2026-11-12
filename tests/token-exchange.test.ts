@@ -176,7 +176,7 @@ describe("per-audience token exchange", () => {
     await bff.app.close();
   });
 
-  it("shares one exchange between replicas through the session lock", async () => {
+  it("lets replicas exchange on their own and converges on the cached token", async () => {
     idp.exchange.delayMs = 60;
     const { bff, inner, id } = await loggedIn();
     const second = await makeBff(idp, {
@@ -185,38 +185,47 @@ describe("per-audience token exchange", () => {
     });
     register(second);
     second.browser.bffJar.set(SESSION_COOKIE, id);
-    const all = await Promise.all([token(bff), token(second)]);
-    expect(all[0]).toBe(all[1]);
-    expect(idp.exchange.calls).toHaveLength(1);
+    const both = await Promise.all([token(bff), token(second)]);
+    expect(both.length).toBe(2);
+    const stored = ((await inner.get(id)) as SessionData).exchanged?.[
+      "crud-api"
+    ]?.accessToken;
+    expect(both).toContain(stored);
+    // From now on both replicas serve the cached token.
+    expect(await token(bff)).toBe(stored);
+    expect(await token(second)).toBe(stored);
     await bff.app.close();
     await second.app.close();
   });
 
-  it("uses a result another replica cached after this request read the session", async () => {
+  it("serves the token without caching it while a refresh holds the lock", async () => {
+    const { bff, inner, id } = await loggedIn();
+    await inner.acquireLock(id, 60_000);
+    expect(await token(bff)).toBeTruthy();
+    expect(((await inner.get(id)) as SessionData).exchanged).toBeUndefined();
+    await bff.app.close();
+  });
+
+  it("merges the cached token into a session that was refreshed meanwhile", async () => {
     const inner = createMemorySessionStore();
-    let stale: SessionData | undefined;
     const store = wrap(inner, {
-      get: async (id: string) => {
-        const value = stale ?? (await inner.get(id));
-        stale = undefined;
-        return value;
+      acquireLock: async (id: string, ttlMs: number) => {
+        const current = (await inner.get(id)) as SessionData;
+        await inner.replace(
+          id,
+          { ...current, accessToken: "refreshed-meanwhile" },
+          600_000,
+          current.version,
+        );
+        return inner.acquireLock(id, ttlMs);
       },
     });
     const { bff, id, data } = await loggedIn({ store });
-    const cachedElsewhere: SessionData = {
-      ...data,
-      exchanged: {
-        "crud-api": {
-          accessToken: "from-another-replica",
-          expiresAt: Date.now() / 1000 + 300,
-        },
-      },
-      version: data.version + 1,
-    };
-    await inner.put(id, cachedElsewhere, 600);
-    stale = data;
-    expect(await token(bff)).toBe("from-another-replica");
-    expect(idp.exchange.calls).toHaveLength(0);
+    await token(bff);
+    const after = (await inner.get(id)) as SessionData;
+    expect(after.accessToken).toBe("refreshed-meanwhile");
+    expect(after.exchanged?.["crud-api"]).toBeDefined();
+    expect(after.version).toBe(data.version + 2);
     await bff.app.close();
   });
 
@@ -276,37 +285,6 @@ describe("per-audience token exchange", () => {
     await bff.app.close();
   });
 
-  it("exchanges from a session token that expires between the cache check and the lock", async () => {
-    const inner = createMemorySessionStore();
-    const { bff, id, data } = await loggedIn({ store: inner });
-    // The request read a fresh session; by the time it holds the lock the
-    // stored one has expired, so the exchange refreshes first.
-    const store = wrap(inner, {
-      get: (() => {
-        let calls = 0;
-        return async (key: string) => {
-          calls += 1;
-          const value = await inner.get(key);
-          return calls === 2 && value !== undefined
-            ? { ...value, accessExpiresAt: 0 }
-            : value;
-        };
-      })(),
-    });
-    const fresh = await makeBff(idp, {
-      store,
-      env: { BFF_UPSTREAMS: upstreams() },
-    });
-    register(fresh);
-    fresh.browser.bffJar.set(SESSION_COOKIE, id);
-    await token(fresh);
-    const after = (await inner.get(id)) as SessionData;
-    expect(after.accessToken).not.toBe(data.accessToken);
-    expect(idp.exchange.calls[0]?.["subject_token"]).toBe(after.accessToken);
-    await fresh.app.close();
-    await bff.app.close();
-  });
-
   it("serves a lifetime-less or too-short exchange once and caches nothing", async () => {
     const { bff, id, inner } = await loggedIn();
     idp.exchange.expiresIn = null;
@@ -338,12 +316,29 @@ describe("per-audience token exchange", () => {
     await bff.app.close();
   });
 
+  it("serves and caches the token even if releasing the lock fails", async () => {
+    const inner = createMemorySessionStore();
+    const store = wrap(inner, {
+      releaseLock: () => Promise.reject(new Error("valkey down")),
+    });
+    const { bff, id } = await loggedIn({ store });
+    const exchanged = await token(bff);
+    expect(
+      ((await inner.get(id)) as SessionData).exchanged?.["crud-api"]
+        ?.accessToken,
+    ).toBe(exchanged);
+    expect(
+      bff.logs.some((l) => l["msg"] === "refresh lock release failed"),
+    ).toBe(true);
+    await bff.app.close();
+  });
+
   it("answers 401 when the session is gone after the exchange", async () => {
     const inner = createMemorySessionStore();
     const store = wrap(inner, {
-      replace: async (id: string) => {
+      acquireLock: async (id: string, ttlMs: number) => {
         await inner.destroy(id);
-        return false;
+        return inner.acquireLock(id, ttlMs);
       },
     });
     const { bff } = await loggedIn({ store });
@@ -436,6 +431,60 @@ describe("a failed exchange fails closed", () => {
       down.logs.find((l) => l["event"] === "token_exchange_failed")?.["reason"],
     ).toBeTypeOf("string");
     await down.app.close();
+  });
+
+  it("answers 502 for an unusable response, 503 when the IdP times out", async () => {
+    const { bff, data } = await loggedIn({
+      env: { OIDC_TIMEOUT_SECONDS: "1" },
+    });
+    idp.exchange.raw = "<html>not json</html>";
+    await expectBlocked(bff, data, 502, "token_exchange_failed");
+    idp.exchange.raw = undefined;
+    idp.exchange.delayMs = 1500;
+    await expectBlocked(bff, data, 503, "idp_unavailable");
+    await bff.app.close();
+  });
+
+  it("answers 503 when the IdP goes away after discovery", async () => {
+    const gone = await startIdp();
+    const bff = await makeBff(gone, { env: { BFF_UPSTREAMS: upstreams() } });
+    register(bff);
+    await bff.browser.login();
+    const id = bff.browser.bffJar.get(SESSION_COOKIE) as string;
+    const data = (await bff.store.get(id)) as SessionData;
+    await gone.close();
+    await expectBlocked(bff, data, 503, "idp_unavailable");
+    await bff.app.close();
+  });
+
+  it("logs only a well-formed IdP error code as the reason", async () => {
+    const { bff } = await loggedIn();
+    idp.exchange.fail = "Bad Code! <script>";
+    expect(
+      (await bff.browser.request("GET", "/bff/test-token")).statusCode,
+    ).toBe(502);
+    expect(
+      bff.logs.find((l) => l["event"] === "token_exchange_failed")?.["reason"],
+    ).toBe("invalid_error");
+    await bff.app.close();
+  });
+
+  it("checks the audience of a JWT, and lets opaque tokens through", async () => {
+    const { bff, data } = await loggedIn();
+    idp.exchange.jwt = { aud: "other-api" };
+    await expectBlocked(bff, data, 502, "token_exchange_failed");
+    idp.exchange.jwt = { aud: undefined };
+    await expectBlocked(bff, data, 502, "token_exchange_failed");
+    expect(
+      bff.logs
+        .filter((l) => l["event"] === "token_exchange_failed")
+        .map((l) => l["reason"]),
+    ).toEqual(["audience_missing", "audience_missing"]);
+    idp.exchange.jwt = { aud: "crud-api" };
+    expect(await token(bff)).toBeTruthy();
+    idp.exchange.jwt = { aud: ["x", "other-api"] };
+    expect(await token(bff, "other")).toBeTruthy();
+    await bff.app.close();
   });
 
   it("names a non-Error failure 'unknown'", async () => {

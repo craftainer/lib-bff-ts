@@ -296,12 +296,14 @@ authenticating as the confidential client, and forwards that instead
 (ADR 0008).
 
 - The exchanged token is cached in the session per audience until
-  `expires_in` minus 30 s, then exchanged again. Concurrent requests for the
-  same session and audience share one exchange, also across replicas.
+  `expires_in` minus 30 s, then exchanged again. Concurrent requests of a
+  process for the same session and audience share one exchange; replicas may
+  each exchange once.
 - It fails closed: when the exchange fails nothing goes upstream and the
   session's own token is never sent in its place. `502 token_exchange_failed`
-  when the IdP refuses or answers with an unusable token, `503 idp_unavailable`
-  when it cannot be reached. The session survives both. The warn-level
+  when the IdP refuses or answers with an unusable token (including a JWT
+  whose `aud` lacks the audience), `503 idp_unavailable` when it cannot be
+  reached. The session survives both. The warn-level
   security event `token_exchange_failed` carries `sub`, `audience` and a
   reason, never a token.
 - The IdP must allow it. For Keycloak 26.2 or later (standard token exchange
