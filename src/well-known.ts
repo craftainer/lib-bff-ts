@@ -17,11 +17,18 @@ function isSingleLine(value: string): boolean {
   return !/[\r\n]/.test(value);
 }
 
-function securityTxt(config: BffConfig, now: Date): string {
+/**
+ * The default `Expires`: the start of the current UTC day plus 364 days. It
+ * only changes at UTC midnight, so it is stable within a day (cacheable,
+ * deterministic in tests) yet never goes stale while the process runs.
+ */
+function defaultExpires(now: Date): string {
+  const dayStart = Math.floor(now.getTime() / DAY_MS) * DAY_MS;
+  return new Date(dayStart + DEFAULT_EXPIRES_DAYS * DAY_MS).toISOString();
+}
+
+function securityTxt(config: BffConfig, expires: string): string {
   const { securityTxt: cfg, publicOrigin } = config;
-  const expires =
-    cfg.expires ??
-    new Date(now.getTime() + DEFAULT_EXPIRES_DAYS * DAY_MS).toISOString();
   const canonical = cfg.canonical ?? `${publicOrigin}/.well-known/security.txt`;
   const fields: [string, string | null][] = [
     ...cfg.contact.map((c): [string, string] => ["Contact", c]),
@@ -71,8 +78,22 @@ function apiCatalog(config: BffConfig): Buffer {
 const wellKnown: FastifyPluginAsync<BffConfig> = async (app, config) => {
   // A file without a valid Contact is invalid (RFC 9116), so it is not served.
   if (config.securityTxt.contact.some(isSingleLine)) {
-    // Computed once at startup, so the default `Expires` is stable between requests.
-    const body = securityTxt(config, new Date());
+    // A configured `Expires` is fixed text, so the body is built once. The
+    // default one moves with the UTC day (ADR 0007): the body is rebuilt on
+    // the first request of each day.
+    const fixedBody =
+      config.securityTxt.expires === null
+        ? null
+        : securityTxt(config, config.securityTxt.expires);
+    let daily: { expires: string; body: string } | null = null;
+    const bodyNow = (): string => {
+      if (fixedBody !== null) return fixedBody;
+      const expires = defaultExpires(new Date());
+      if (daily?.expires !== expires) {
+        daily = { expires, body: securityTxt(config, expires) };
+      }
+      return daily.body;
+    };
     // A configured date is fixed text, so it can lapse while the process runs
     // (or before it starts). RFC 9116 section 2.5.5: an expired file is stale,
     // so it is dropped (404) rather than crashing the BFF; a date a year or
@@ -95,7 +116,7 @@ const wellKnown: FastifyPluginAsync<BffConfig> = async (app, config) => {
     app.get("/.well-known/security.txt", async (_request, reply) =>
       expiresAt !== null && expiresAt <= Date.now()
         ? reply.callNotFound()
-        : reply.type("text/plain; charset=utf-8").send(body),
+        : reply.type("text/plain; charset=utf-8").send(bodyNow()),
     );
   }
 
