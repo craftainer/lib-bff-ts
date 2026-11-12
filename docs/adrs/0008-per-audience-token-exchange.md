@@ -39,28 +39,31 @@ instead of the session's own:
   the skew, is used for that request and not cached. Upstreams that share an
   audience share the entry. The subject token is refreshed first when it is
   stale, by the existing refresh path; the cache survives that refresh.
-- **Concurrency.** Requests of one process for the same session and audience
-  share one in-flight exchange. The IdP call runs outside the session's
-  refresh lock, so exchanges for several audiences run in parallel and a slow
-  IdP cannot overrun the lock (a refresh and an exchange in one hold would).
-  Only the cache write takes the lock, without waiting: it merges the entry
-  into the session as it is then (a refresh may have run meanwhile) with the
-  usual version fence, and when the lock is busy or the write loses, the token
-  serves just that request and a later one exchanges again. Replicas can
+- **Concurrency.** Requests of one process for the same session state and
+  audience share one in-flight exchange. The IdP call runs outside the
+  session's refresh lock, so exchanges for several audiences run in parallel
+  and a slow IdP cannot overrun the lock (a refresh and an exchange in one hold
+  would). Only the cache write takes the lock: it waits up to 2 s, merges the
+  entry into the session as it is then (a refresh may have run meanwhile) with
+  the usual version fence, and is best effort. When it cannot write (lock busy,
+  lost write, store error), the token serves just that request and a later one
+  exchanges again. A session that is gone is still a 401. Replicas can
   therefore exchange once each for the same audience (each token is valid);
-  that is a deliberate trade against serialising IdP calls per session.
+  that is a deliberate trade against serialising IdP calls per session. The
+  entry's expiry counts from the moment the request was sent.
 - **Fail closed.** If the exchange does not yield a valid token, the request
   gets an error and nothing goes upstream; the session's own token is never
   the fallback. The IdP answering with an error (`invalid_target`,
   `access_denied`, ...) or with an unusable response gives
   `502 token_exchange_failed`. Failing to reach the IdP (network error,
-  timeout, discovery failure) gives `503 idp_unavailable`, as for a refresh.
+  timeout, discovery failure) or an IdP that reports a server error (HTTP 5xx,
+  `server_error`, `temporarily_unavailable`) gives `503 idp_unavailable`.
   Neither ends the session: a denied exchange is a configuration or policy
   problem, not a dead login. A response is also refused (502) when its
   `token_type` is not `Bearer`, its `issued_token_type` is not an access
   token, its token is the subject token itself (the IdP restricted nothing),
   or it is a JWT whose `aud` does not contain the audience (opaque tokens
-  cannot be checked). Failures are logged as the warn-level security event
+  cannot be checked; an IdP must put the audience in `aud`). Failures are logged as the warn-level security event
   `token_exchange_failed` with `sub`, `audience` and a reason code (an IdP
   error code only when it is lowercase letters and underscores), never a token.
 - **Opt-in, per upstream.** `tokenExchange` already existed in the schema

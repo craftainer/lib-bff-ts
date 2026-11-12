@@ -157,14 +157,21 @@ export function clearSessionCookie(
 const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 
-/** An exchanged token and, when it was cached, the session as it stands after that. */
-interface Exchanged {
-  token: string;
-  data?: SessionData;
-}
+/** The longest storing an exchanged token waits for the session lock. */
+const CACHE_LOCK_WAIT_MS = 2000;
 
+/** Exchanges in flight in this process, keyed by session, session version and audience. */
+type Flights = Map<string, Promise<string>>;
+
+/** A log-safe reason for a failure that is not an OAuth error response: the error's class and fixed code. */
 function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : "unknown";
+  if (!(error instanceof Error)) {
+    return "unknown";
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code)
+    ? `${error.name}:${code}`
+    : error.name;
 }
 
 /** The `aud` of a JWT as a list, or undefined when the token is not a decodable JWT. */
@@ -176,9 +183,6 @@ function jwtAudiences(token: string): string[] | undefined {
     return undefined;
   }
 }
-
-/** Exchanges in flight in this process, keyed by session and audience. */
-type Flights = Map<string, Promise<Exchanged>>;
 
 function createSession(
   app: { bffStore: SessionStore; bffOidc: OidcClient },
@@ -318,7 +322,7 @@ function createSession(
   }
 
   /** The cached exchanged token for `audience`, while it is not about to expire. */
-  function cached(d: SessionData, audience: string): string | undefined {
+  function readCached(d: SessionData, audience: string): string | undefined {
     const entry =
       d.exchanged !== undefined && Object.hasOwn(d.exchanged, audience)
         ? d.exchanged[audience]
@@ -372,15 +376,27 @@ function createSession(
     } catch (error) {
       if (error instanceof client.ResponseBodyError) {
         // The code comes from the IdP: log it only when it looks like one.
-        return exchangeFailed(
-          d,
-          audience,
-          /^[a-z_]{1,64}$/.test(error.error) ? error.error : "invalid_error",
-          502,
-        );
+        const reason = /^[a-z_]{1,64}$/.test(error.error)
+          ? error.error
+          : "invalid_error";
+        // An IdP that says it is struggling is an outage, not a denial.
+        const outage =
+          error.status >= 500 ||
+          error.error === "server_error" ||
+          error.error === "temporarily_unavailable";
+        return exchangeFailed(d, audience, reason, outage ? 503 : 502);
       }
+      // An IdP answer that is not an OAuth error (a gateway page) keeps the
+      // HTTP response as the cause: 5xx is an outage.
+      const serverError =
+        error instanceof client.ClientError &&
+        error.cause instanceof Response &&
+        error.cause.status >= 500;
+      // A failed fetch is a TypeError without a code (argument errors have one).
       const unreachable =
-        error instanceof TypeError ||
+        serverError ||
+        (error instanceof TypeError &&
+          (error as { code?: unknown }).code === undefined) ||
         (error instanceof client.ClientError &&
           (error.code === "OAUTH_TIMEOUT" || error.code === "OAUTH_ABORT"));
       return exchangeFailed(
@@ -392,44 +408,58 @@ function createSession(
     }
   }
 
-  /** Stores the exchanged token in the session when the lock is free; never waits. */
-  async function cache(
+  /**
+   * Stores the exchanged token in the session, best effort: it waits briefly
+   * for the lock (parallel exchanges for other audiences, a refresh), and when
+   * it cannot write, the token serves only the request that asked and a later
+   * request exchanges again. Only a gone session (401) is an error.
+   */
+  async function storeExchanged(
     audience: string,
     token: string,
-    lifetime: number,
-  ): Promise<SessionData | undefined> {
-    const lock = await store.acquireLock(id, config.session.refreshLock.ttlMs);
-    if (lock === undefined) {
-      // A refresh or another cache write is running: this token serves only
-      // this request, and a later request exchanges again.
-      return undefined;
-    }
+    expiresAt: number,
+  ): Promise<void> {
+    const { ttlMs, waitMs, pollMs } = config.session.refreshLock;
+    const deadline = Date.now() + Math.min(waitMs, CACHE_LOCK_WAIT_MS);
     try {
-      // Merge into the session as it is now (a refresh may have run meanwhile).
-      const latest = await reread();
-      const now = nowSeconds();
-      const kept = Object.entries(latest.exchanged ?? {}).filter(
-        ([key, entry]) => key !== audience && entry.expiresAt > now,
-      );
-      const next: SessionData = {
-        ...latest,
-        exchanged: {
-          ...Object.fromEntries(kept),
-          [audience]: { accessToken: token, expiresAt: now + lifetime },
-        },
-      };
-      return (await store.replace(
-        id,
-        next,
-        sessionTtlSeconds(config, next, now) * 1000,
-        latest.version,
-      ))
-        ? { ...next, version: latest.version + 1 }
-        : undefined;
-    } finally {
-      await store.releaseLock(id, lock).catch((error: unknown) => {
-        log.error({ err: error }, "refresh lock release failed");
-      });
+      let lock = await store.acquireLock(id, ttlMs);
+      while (lock === undefined && Date.now() < deadline) {
+        await sleep(pollMs);
+        lock = await store.acquireLock(id, ttlMs);
+      }
+      if (lock === undefined) {
+        return;
+      }
+      try {
+        // Merge into the session as it is now (a refresh may have run meanwhile).
+        const latest = await reread();
+        const now = nowSeconds();
+        const kept = Object.entries(latest.exchanged ?? {}).filter(
+          ([key, entry]) => key !== audience && entry.expiresAt > now,
+        );
+        const next: SessionData = {
+          ...latest,
+          exchanged: {
+            ...Object.fromEntries(kept),
+            [audience]: { accessToken: token, expiresAt },
+          },
+        };
+        await store.replace(
+          id,
+          next,
+          sessionTtlSeconds(config, next, now) * 1000,
+          latest.version,
+        );
+      } finally {
+        await store.releaseLock(id, lock).catch((error: unknown) => {
+          log.error({ err: error }, "refresh lock release failed");
+        });
+      }
+    } catch (error) {
+      if (error instanceof BffHttpError) {
+        throw error;
+      }
+      log.error({ err: error }, "caching the exchanged token failed");
     }
   }
 
@@ -437,7 +467,9 @@ function createSession(
   async function exchange(
     base: SessionData,
     audience: string,
-  ): Promise<Exchanged> {
+  ): Promise<string> {
+    // The lifetime counts from the request, not from when the answer is stored.
+    const requestedAt = nowSeconds();
     const response = await requestExchange(base, audience);
     const issuedType = response["issued_token_type"];
     if (
@@ -460,25 +492,24 @@ function createSession(
     const lifetime = response.expires_in;
     // No usable lifetime: serve this request, cache nothing.
     if (
-      lifetime === undefined ||
-      lifetime <= config.session.accessTokenSkewSeconds
+      lifetime !== undefined &&
+      lifetime > config.session.accessTokenSkewSeconds
     ) {
-      return { token };
+      await storeExchanged(audience, token, requestedAt + lifetime);
     }
-    const stored = await cache(audience, token, lifetime);
-    return stored === undefined ? { token } : { token, data: stored };
+    return token;
   }
 
   async function exchangedTokenFor(audience: string): Promise<string> {
     data = await current();
-    const hit = cached(data, audience);
+    const hit = readCached(data, audience);
     if (hit !== undefined) {
       return hit;
     }
-    // Requests of this process for the same session and audience share one
-    // exchange. Replicas may each exchange once; the first to cache wins and
-    // the others only serve their own token to the request that asked.
-    const key = `${id}\0${audience}`;
+    // Requests of this process for the same session state and audience share
+    // one exchange. Replicas may each exchange once; the first to store wins
+    // and the others only serve their own token to the request that asked.
+    const key = `${id}\0${data.version}\0${audience}`;
     let flight = flights.get(key);
     if (flight === undefined) {
       flight = exchange(data, audience).finally(() => {
@@ -486,11 +517,7 @@ function createSession(
       });
       flights.set(key, flight);
     }
-    const result = await flight;
-    if (result.data !== undefined && result.data.version >= data.version) {
-      data = result.data;
-    }
-    return result.token;
+    return flight;
   }
 
   return {

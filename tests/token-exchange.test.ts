@@ -64,7 +64,11 @@ function register(bff: TestBff): void {
 }
 
 async function loggedIn(
-  opts: { env?: Record<string, string>; store?: SessionStore } = {},
+  opts: {
+    env?: Record<string, string>;
+    store?: SessionStore;
+    config?: ReturnType<typeof testConfig>;
+  } = {},
 ): Promise<{
   bff: TestBff;
   id: string;
@@ -75,6 +79,7 @@ async function loggedIn(
   const bff = await makeBff(idp, {
     store: inner,
     env: { BFF_UPSTREAMS: upstreams(), ...opts.env },
+    ...(opts.config === undefined ? {} : { config: opts.config }),
   });
   register(bff);
   await bff.browser.login();
@@ -101,6 +106,7 @@ afterAll(async () => {
 beforeEach(() => {
   idp.exchange.calls.length = 0;
   idp.exchange.fail = undefined;
+  idp.exchange.failStatus = 400;
   idp.exchange.echo = false;
   idp.exchange.expiresIn = 300;
   idp.exchange.delayMs = 0;
@@ -198,11 +204,56 @@ describe("per-audience token exchange", () => {
     await second.app.close();
   });
 
-  it("serves the token without caching it while a refresh holds the lock", async () => {
-    const { bff, inner, id } = await loggedIn();
+  it("serves the token without caching it while a refresh keeps the lock", async () => {
+    const base = testConfig(idp, { BFF_UPSTREAMS: upstreams() });
+    const config = {
+      ...base,
+      session: {
+        ...base.session,
+        refreshLock: { ttlMs: 5000, waitMs: 60, pollMs: 10 },
+      },
+    };
+    const { bff, inner, id } = await loggedIn({ config });
     await inner.acquireLock(id, 60_000);
     expect(await token(bff)).toBeTruthy();
     expect(((await inner.get(id)) as SessionData).exchanged).toBeUndefined();
+    await bff.app.close();
+  });
+
+  it("waits briefly for the lock to cache, as parallel exchanges do", async () => {
+    const { bff, inner, id } = await loggedIn();
+    const lock = (await inner.acquireLock(id, 60_000)) as string;
+    setTimeout(() => void inner.releaseLock(id, lock), 100);
+    const exchanged = await token(bff);
+    expect(
+      ((await inner.get(id)) as SessionData).exchanged?.["crud-api"]
+        ?.accessToken,
+    ).toBe(exchanged);
+    await bff.app.close();
+  });
+
+  it("caches every audience of parallel exchanges", async () => {
+    idp.exchange.delayMs = 30;
+    const { bff, inner, id } = await loggedIn();
+    await Promise.all([token(bff, "crud"), token(bff, "other")]);
+    expect(
+      Object.keys(
+        ((await inner.get(id)) as SessionData).exchanged ?? {},
+      ).sort(),
+    ).toEqual(["crud-api", "other-api"]);
+    await bff.app.close();
+  });
+
+  it("serves the token when the store fails while caching it", async () => {
+    const inner = createMemorySessionStore();
+    const store = wrap(inner, {
+      acquireLock: () => Promise.reject(new Error("valkey down")),
+    });
+    const { bff } = await loggedIn({ store });
+    expect(await token(bff)).toBeTruthy();
+    expect(
+      bff.logs.some((l) => l["msg"] === "caching the exchanged token failed"),
+    ).toBe(true);
     await bff.app.close();
   });
 
@@ -439,6 +490,9 @@ describe("a failed exchange fails closed", () => {
     });
     idp.exchange.raw = "<html>not json</html>";
     await expectBlocked(bff, data, 502, "token_exchange_failed");
+    expect(
+      bff.logs.find((l) => l["event"] === "token_exchange_failed")?.["reason"],
+    ).toMatch(/^ClientError:[A-Z_]+$/);
     idp.exchange.raw = undefined;
     idp.exchange.delayMs = 1500;
     await expectBlocked(bff, data, 503, "idp_unavailable");
@@ -453,6 +507,18 @@ describe("a failed exchange fails closed", () => {
     const id = bff.browser.bffJar.get(SESSION_COOKIE) as string;
     const data = (await bff.store.get(id)) as SessionData;
     await gone.close();
+    await expectBlocked(bff, data, 503, "idp_unavailable");
+    await bff.app.close();
+  });
+
+  it("answers 503 when the IdP reports a server error", async () => {
+    const { bff, data } = await loggedIn();
+    idp.exchange.fail = "temporarily_unavailable";
+    await expectBlocked(bff, data, 503, "idp_unavailable");
+    idp.exchange.fail = "server_error";
+    await expectBlocked(bff, data, 503, "idp_unavailable");
+    idp.exchange.fail = "overloaded";
+    idp.exchange.failStatus = 503;
     await expectBlocked(bff, data, 503, "idp_unavailable");
     await bff.app.close();
   });

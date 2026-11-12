@@ -44,6 +44,8 @@ export interface TestIdp {
   exchange: {
     calls: Record<string, string | undefined>[];
     fail: string | undefined;
+    /** HTTP status of the `fail` answer. */
+    failStatus: number;
     echo: boolean;
     expiresIn: number | null;
     delayMs: number;
@@ -185,6 +187,7 @@ export async function startIdp(
   const exchange: TestIdp["exchange"] = {
     calls: [],
     fail: undefined,
+    failStatus: 400,
     echo: false,
     expiresIn: 300,
     delayMs: 0,
@@ -210,7 +213,7 @@ export async function startIdp(
         await new Promise((resolve) => setTimeout(resolve, exchange.delayMs));
       }
       if (exchange.fail !== undefined) {
-        ctx.status = 400;
+        ctx.status = exchange.failStatus;
         ctx.body = { error: exchange.fail };
         return;
       }

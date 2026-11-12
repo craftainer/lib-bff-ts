@@ -303,7 +303,7 @@ authenticating as the confidential client, and forwards that instead
   session's own token is never sent in its place. `502 token_exchange_failed`
   when the IdP refuses or answers with an unusable token (including a JWT
   whose `aud` lacks the audience), `503 idp_unavailable` when it cannot be
-  reached. The session survives both. The warn-level
+  reached or reports a server error. The session survives both. The warn-level
   security event `token_exchange_failed` carries `sub`, `audience` and a
   reason, never a token.
 - The IdP must allow it. For Keycloak 26.2 or later (standard token exchange
