@@ -31,6 +31,13 @@ export interface BffSession {
    * Returns an access token for the named upstream, refreshing it first when
    * it is about to expire. When the refresh fails the session is destroyed
    * and this rejects with a 401 error.
+   *
+   * For an upstream with `tokenExchange: true` the token is not the session's
+   * own: it is an audience-restricted token the IdP issued for the upstream's
+   * `audience` by RFC 8693 token exchange, cached in the session. When the
+   * exchange fails this rejects (502 `token_exchange_failed`, or 503
+   * `idp_unavailable` when the IdP cannot be reached) and never falls back to
+   * the session's own token.
    */
   accessTokenFor(upstream: string): Promise<string>;
 }
@@ -145,12 +152,26 @@ export function clearSessionCookie(
   void reply.clearCookie(config.session.cookieName, cookieAttributes("strict"));
 }
 
+/** RFC 8693 section 2.1 / 3: the grant type and the access-token type identifier. */
+const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
+
+/** An exchanged token and the session as it stands after caching it. */
+interface Exchanged {
+  data: SessionData;
+  token: string;
+}
+
+/** Exchanges in flight in this process, keyed by session and audience. */
+type Flights = Map<string, Promise<Exchanged>>;
+
 function createSession(
   app: { bffStore: SessionStore; bffOidc: OidcClient },
   config: BffConfig,
   id: string,
   initial: SessionData,
   log: Parameters<typeof securityLog>[0],
+  flights: Flights,
 ): BffSession {
   const store = app.bffStore;
   let data = initial;
@@ -250,10 +271,15 @@ function createSession(
     return reread();
   }
 
-  async function current(): Promise<SessionData> {
-    if (fresh(data)) {
-      return data;
-    }
+  /**
+   * Runs `work` under the session's refresh lock, unless `ready` already finds
+   * its result in the session (another request may have produced it while
+   * this one waited). Waits at most the lock wait time, then 503.
+   */
+  async function locked<R>(
+    ready: (d: SessionData) => R | undefined,
+    work: (d: SessionData) => Promise<R>,
+  ): Promise<R> {
     const { ttlMs, waitMs, pollMs } = config.session.refreshLock;
     const deadline = Date.now() + waitMs;
     for (;;) {
@@ -261,7 +287,7 @@ function createSession(
       if (token !== undefined) {
         try {
           const latest = await reread();
-          return fresh(latest) ? latest : await refresh(latest);
+          return ready(latest) ?? (await work(latest));
         } finally {
           // A failed release must not mask the real outcome; the lock expires.
           await store.releaseLock(id, token).catch((error: unknown) => {
@@ -269,16 +295,152 @@ function createSession(
           });
         }
       }
-      // Another request is refreshing this session: wait for its result.
+      // Another request holds the lock: wait for its result.
       await sleep(pollMs);
-      const latest = await reread();
-      if (fresh(latest)) {
-        return latest;
+      const done = ready(await reread());
+      if (done !== undefined) {
+        return done;
       }
       if (Date.now() >= deadline) {
         throw new BffHttpError(503, "refresh_in_progress");
       }
     }
+  }
+
+  async function current(): Promise<SessionData> {
+    if (fresh(data)) {
+      return data;
+    }
+    return locked((d) => (fresh(d) ? d : undefined), refresh);
+  }
+
+  /** The cached exchanged token for `audience`, while it is not about to expire. */
+  function cached(d: SessionData, audience: string): string | undefined {
+    const entry =
+      d.exchanged !== undefined && Object.hasOwn(d.exchanged, audience)
+        ? d.exchanged[audience]
+        : undefined;
+    return entry !== undefined &&
+      entry.expiresAt - nowSeconds() > config.session.accessTokenSkewSeconds
+      ? entry.accessToken
+      : undefined;
+  }
+
+  /** A failed exchange: logged without any token, and never answered with the session's own. */
+  function exchangeFailed(
+    d: SessionData,
+    audience: string,
+    reason: string,
+    status: 502 | 503,
+  ): never {
+    securityLog(log, "token_exchange_failed", { sub: d.sub, audience, reason });
+    throw new BffHttpError(
+      status,
+      status === 502 ? "token_exchange_failed" : "idp_unavailable",
+    );
+  }
+
+  /** RFC 8693 exchange of the session's access token; caches the result in the session. */
+  async function exchange(
+    d: SessionData,
+    audience: string,
+  ): Promise<Exchanged> {
+    const base = fresh(d) ? d : await refresh(d);
+    let response: client.TokenEndpointResponse;
+    try {
+      response = await client.genericGrantRequest(
+        await app.bffOidc.configuration(),
+        TOKEN_EXCHANGE_GRANT,
+        {
+          subject_token: base.accessToken,
+          subject_token_type: ACCESS_TOKEN_TYPE,
+          requested_token_type: ACCESS_TOKEN_TYPE,
+          audience,
+        },
+      );
+    } catch (error) {
+      // A definitive answer from the IdP (invalid_target, access_denied, ...)
+      // is a misconfiguration or a denial: 502. Anything else is an outage.
+      return error instanceof client.ResponseBodyError
+        ? exchangeFailed(base, audience, error.error, 502)
+        : exchangeFailed(
+            base,
+            audience,
+            error instanceof Error ? error.name : "unknown",
+            503,
+          );
+    }
+    const issuedType = response["issued_token_type"];
+    if (
+      response.token_type !== "bearer" ||
+      (issuedType !== undefined && issuedType !== ACCESS_TOKEN_TYPE)
+    ) {
+      return exchangeFailed(base, audience, "unexpected_token_type", 502);
+    }
+    // An IdP that hands the subject token straight back restricted nothing.
+    if (response.access_token === base.accessToken) {
+      return exchangeFailed(base, audience, "token_not_exchanged", 502);
+    }
+    const token = response.access_token;
+    const now = nowSeconds();
+    const lifetime = response.expires_in;
+    // No usable lifetime: serve this request, cache nothing.
+    if (
+      lifetime === undefined ||
+      lifetime <= config.session.accessTokenSkewSeconds
+    ) {
+      return { data: base, token };
+    }
+    const kept = Object.entries(base.exchanged ?? {}).filter(
+      ([key, entry]) => key !== audience && entry.expiresAt > now,
+    );
+    const next: SessionData = {
+      ...base,
+      exchanged: {
+        ...Object.fromEntries(kept),
+        [audience]: { accessToken: token, expiresAt: now + lifetime },
+      },
+    };
+    // Fenced like a refresh. Losing means the session moved on or is gone;
+    // the token is still good for this request, but only if the session lives.
+    if (
+      await store.replace(
+        id,
+        next,
+        sessionTtlSeconds(config, next, now) * 1000,
+        base.version,
+      )
+    ) {
+      return { data: { ...next, version: base.version + 1 }, token };
+    }
+    return { data: await reread(), token };
+  }
+
+  async function exchangedTokenFor(audience: string): Promise<string> {
+    data = await current();
+    const hit = cached(data, audience);
+    if (hit !== undefined) {
+      return hit;
+    }
+    // One exchange per session and audience at a time: requests of this
+    // process share it, other replicas find its result in the session.
+    const key = `${id}\0${audience}`;
+    let flight = flights.get(key);
+    if (flight === undefined) {
+      flight = locked(
+        (d) => {
+          const token = cached(d, audience);
+          return token === undefined ? undefined : { data: d, token };
+        },
+        (d) => exchange(d, audience),
+      ).finally(() => {
+        flights.delete(key);
+      });
+      flights.set(key, flight);
+    }
+    const result = await flight;
+    data = result.data;
+    return result.token;
   }
 
   return {
@@ -295,9 +457,7 @@ function createSession(
         throw new Error(`unknown upstream: ${upstream}`);
       }
       if (target.tokenExchange) {
-        throw new Error(
-          "per-upstream token exchange (RFC 8693) is not implemented",
-        );
+        return exchangedTokenFor(target.audience);
       }
       data = await current();
       return data.accessToken;
@@ -333,6 +493,7 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
   }
   app.decorate("bffOidc", createOidcClient(config));
   app.decorateRequest("bffSession", null);
+  const flights: Flights = new Map();
 
   app.addHook("onClose", async () => {
     if (owned) {
@@ -362,7 +523,14 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
       return;
     }
     await app.bffStore.touch(id, sessionTtlSeconds(config, data, now));
-    request.bffSession = createSession(app, config, id, data, request.log);
+    request.bffSession = createSession(
+      app,
+      config,
+      id,
+      data,
+      request.log,
+      flights,
+    );
   });
 };
 

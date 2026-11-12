@@ -27,11 +27,16 @@ function isLoopback(hostname: string): boolean {
 export interface UpstreamConfig {
   /** Base URL of the upstream, without query or fragment. */
   url: string;
-  /** Expected token audience (the upstream validates `aud`). */
+  /** Expected token audience (the upstream validates `aud`); the `audience` of the exchange when `tokenExchange` is on. */
   audience: string;
   /** Methods the proxy forwards; everything else is answered 405. */
   methods: string[];
-  /** RFC 8693 token exchange for this upstream. Defined but not implemented: `true` is rejected at use. */
+  /**
+   * RFC 8693 token exchange for this upstream: the proxy forwards an
+   * audience-restricted token the IdP issues for `audience` instead of the
+   * session's own access token. Off by default, so existing configs keep
+   * working against an IdP that has no exchange set up.
+   */
   tokenExchange: boolean;
   /** Server-sent events: the proxy disables the body timeout. */
   stream: boolean;

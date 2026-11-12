@@ -168,33 +168,12 @@ describe("access token refresh", () => {
     await down.app.close();
   });
 
-  it("rejects unknown upstreams and the unimplemented token exchange", async () => {
+  it("rejects unknown upstreams", async () => {
     const { bff } = await loggedIn();
     expect(
       (await bff.browser.request("GET", "/bff/test-token?u=nope")).statusCode,
     ).toBe(500);
     await bff.app.close();
-
-    const inner = createMemorySessionStore();
-    const exchange = await makeBff(idp, {
-      store: inner,
-      env: {
-        BFF_UPSTREAMS: JSON.stringify({
-          crud: {
-            url: "http://crud.test",
-            audience: "api",
-            methods: ["GET"],
-            tokenExchange: true,
-          },
-        }),
-      },
-    });
-    register(exchange);
-    await exchange.browser.login();
-    expect(
-      (await exchange.browser.request("GET", "/bff/test-token")).statusCode,
-    ).toBe(500);
-    await exchange.app.close();
   });
 });
 

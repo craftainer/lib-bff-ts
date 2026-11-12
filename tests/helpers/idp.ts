@@ -13,6 +13,7 @@ import Provider from "oidc-provider";
 export const PUBLIC_ORIGIN = "http://localhost:8080";
 export const CLIENT_ID = "bff";
 export const CLIENT_SECRET = "test-client-secret";
+export const TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange";
 export const SCOPES = "openid profile email roles offline_access";
 
 /** An in-process `oidc-provider` standing in for Keycloak. */
@@ -32,6 +33,23 @@ export interface TestIdp {
   refreshExpiresIn: number | undefined;
   /** What `/jwks` does: stall for `delayMs`, and/or answer `status` instead of the key set. */
   jwks: { delayMs: number; status: number | undefined };
+  /**
+   * The RFC 8693 token-exchange grant, which `oidc-provider` lacks and the
+   * test IdP adds with `registerGrantType`. Issues an opaque access token that
+   * differs from the subject token. Set `fail` to an OAuth error code to
+   * answer with it, `issuedTokenType`/`tokenType` to answer oddly, `echo` to
+   * hand the subject token back, `expiresIn` (null omits it), `delayMs` to
+   * stall. `calls` records the request parameters of every exchange.
+   */
+  exchange: {
+    calls: Record<string, string | undefined>[];
+    fail: string | undefined;
+    echo: boolean;
+    expiresIn: number | null;
+    delayMs: number;
+    issuedTokenType: string | undefined;
+    tokenType: string;
+  };
   /** A foreign key pair for bad-signature tests. */
   otherKey: CryptoKey;
   close(): Promise<void>;
@@ -67,7 +85,7 @@ export async function startIdp(
         client_secret: CLIENT_SECRET,
         redirect_uris: [`${PUBLIC_ORIGIN}/bff/callback`],
         post_logout_redirect_uris: [`${PUBLIC_ORIGIN}/`],
-        grant_types: ["authorization_code", "refresh_token"],
+        grant_types: ["authorization_code", "refresh_token", TOKEN_EXCHANGE],
         response_types: ["code"],
         token_endpoint_auth_method: "client_secret_post",
         backchannel_logout_uri: `${PUBLIC_ORIGIN}/bff/backchannel-logout`,
@@ -160,6 +178,67 @@ export async function startIdp(
     }
   });
 
+  const exchange: TestIdp["exchange"] = {
+    calls: [],
+    fail: undefined,
+    echo: false,
+    expiresIn: 300,
+    delayMs: 0,
+    issuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
+    tokenType: "Bearer",
+  };
+  provider.registerGrantType(
+    TOKEN_EXCHANGE,
+    async (ctx) => {
+      const params = ctx.oidc.params as Record<string, string | undefined>;
+      exchange.calls.push({
+        client: ctx.oidc.client?.clientId,
+        subject_token: params["subject_token"],
+        subject_token_type: params["subject_token_type"],
+        requested_token_type: params["requested_token_type"],
+        audience: params["audience"],
+        scope: params["scope"],
+        auth: ctx.get("authorization") === "" ? "post" : "basic",
+      });
+      if (exchange.delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, exchange.delayMs));
+      }
+      if (exchange.fail !== undefined) {
+        ctx.status = 400;
+        ctx.body = { error: exchange.fail };
+        return;
+      }
+      const { AccessToken } = ctx.oidc.provider;
+      const subject = await AccessToken.find(params["subject_token"] as string);
+      if (subject === undefined) {
+        ctx.status = 400;
+        ctx.body = { error: "invalid_request" };
+        return;
+      }
+      const token = new AccessToken({
+        accountId: subject.accountId,
+        client: ctx.oidc.client as never,
+        grantId: subject.grantId,
+        gty: TOKEN_EXCHANGE,
+        scope: subject.scope,
+      });
+      const value = exchange.echo
+        ? (params["subject_token"] as string)
+        : await token.save();
+      ctx.body = {
+        access_token: value,
+        token_type: exchange.tokenType,
+        ...(exchange.issuedTokenType === undefined
+          ? {}
+          : { issued_token_type: exchange.issuedTokenType }),
+        ...(exchange.expiresIn === null
+          ? {}
+          : { expires_in: exchange.expiresIn }),
+      };
+    },
+    ["subject_token", "subject_token_type", "requested_token_type", "audience"],
+  );
+
   const server: Server = provider.listen(port, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
 
@@ -185,6 +264,7 @@ export async function startIdp(
     set tokenDelayMs(value: number) {
       delays.tokenMs = value;
     },
+    exchange,
     otherKey: other.privateKey,
     async sign(payload, opts = {}) {
       return new SignJWT(payload)

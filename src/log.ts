@@ -16,7 +16,8 @@ export type SecurityEvent =
   | "backchannel_logout"
   | "backchannel_logout_rejected"
   | "rate_limited"
-  | "token_revocation_failed";
+  | "token_revocation_failed"
+  | "token_exchange_failed";
 
 const WARN_EVENTS: ReadonlySet<SecurityEvent> = new Set([
   "login_failed",
@@ -26,6 +27,7 @@ const WARN_EVENTS: ReadonlySet<SecurityEvent> = new Set([
   "backchannel_logout_rejected",
   "rate_limited",
   "token_revocation_failed",
+  "token_exchange_failed",
 ]);
 
 /** Allowed field values: never pass tokens, cookies or session IDs here. */
