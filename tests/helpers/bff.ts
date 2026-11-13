@@ -27,6 +27,7 @@ export function testConfig(
   env: Record<string, string> = {},
 ): BffConfig {
   return loadConfig({
+    NODE_ENV: "test",
     PUBLIC_ORIGIN,
     OIDC_ISSUER: idp.issuer,
     OIDC_ALLOW_INSECURE: "true",
