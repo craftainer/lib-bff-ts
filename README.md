@@ -259,9 +259,14 @@ fields and keys off the allowlist are rejected. The SPA sends it with
 
 `POST /bff/consent` with `{"analytics": true | false}` stores the choice in
 the cookie `__Host-Http-consent` (`1` / `0`, `HttpOnly; Secure;
-SameSite=Strict; Path=/`, 180 days) and answers `{analytics}`;
-`GET /bff/consent` returns the current `{analytics}`. A stored `0` stops
-recording in **every** mode, including `implied`.
+SameSite=Strict; Path=/`, 180 days) and answers `{analytics, decided: true}`;
+`GET /bff/consent` returns the current `{analytics, decided}`. `analytics` is
+`true` only for a stored `1`. `decided` is `true` once the visitor has
+answered (a stored `1` or `0`) and `false` when there is no usable answer
+yet, so an SPA can tell "not asked yet" (show the banner) from "declined".
+`decided` is new in 0.4.0 and `analytics` is unchanged, so existing clients
+keep working. A stored `0` stops recording in **every** mode, including
+`implied`.
 
 ### API proxy
 
