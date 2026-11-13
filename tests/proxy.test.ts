@@ -1,6 +1,7 @@
 import { request } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import "../src/index.ts";
+import { FORWARDED_REQUEST_HEADERS } from "../src/proxy.ts";
 import type { SessionData, SessionStore } from "../src/session.ts";
 import { createMemorySessionStore } from "../src/session.ts";
 import { makeBff, type TestBff } from "./helpers/bff.ts";
@@ -296,6 +297,67 @@ describe("request headers", () => {
       "analytics-consent": "1",
     });
     expect(last().headers["analytics-consent"]).toBeUndefined();
+  });
+
+  it("replaces a client-sent Analytics-Consent with the BFF's own value, in any case and count", async () => {
+    await listening();
+    const port = (bff.app.server.address() as { port: number }).port;
+    const send = (headers: Record<string, string | string[]>): Promise<void> =>
+      new Promise((resolve, reject) => {
+        const req = request(
+          {
+            host: "127.0.0.1",
+            port,
+            path: "/api/crud/consent",
+            headers: {
+              "x-csrf": "1",
+              cookie: `__Host-Http-session=${sessionId}`,
+              ...headers,
+            },
+          },
+          (res) => {
+            res.resume();
+            res.on("end", resolve);
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+    // Consent false: every spelling is dropped, none reaches the upstream.
+    await send({ "x-test-consent": "0", "Analytics-Consent": "1" });
+    expect(last().headers["analytics-consent"]).toBeUndefined();
+    await send({ "x-test-consent": "0", "ANALYTICS-CONSENT": "1" });
+    expect(last().headers["analytics-consent"]).toBeUndefined();
+    await send({ "x-test-consent": "0", "analytics-CONSENT": ["1", "1"] });
+    expect(last().headers["analytics-consent"]).toBeUndefined();
+    // No consent state at all: still dropped.
+    await send({ "aNaLyTiCs-CoNsEnT": "1" });
+    expect(last().headers["analytics-consent"]).toBeUndefined();
+    // Consent true: upstream sees exactly the BFF's "1", never the client's value.
+    await send({ "x-test-consent": "1", "Analytics-Consent": "0" });
+    expect(last().headers["analytics-consent"]).toBe("1");
+    await send({ "x-test-consent": "1", "ANALYTICS-CONSENT": ["yes", "2"] });
+    expect(last().headers["analytics-consent"]).toBe("1");
+  });
+
+  it("keeps BFF-owned headers out of the allowlist and deletes them even if one slipped in", async () => {
+    expect(FORWARDED_REQUEST_HEADERS).not.toContain("analytics-consent");
+    expect(FORWARDED_REQUEST_HEADERS).not.toContain("authorization");
+    const allowlist = FORWARDED_REQUEST_HEADERS as string[];
+    allowlist.push("analytics-consent", "authorization");
+    try {
+      await get("/api/crud/consent", {
+        "x-test-consent": "0",
+        "analytics-consent": "1",
+        authorization: "Bearer attacker",
+      });
+      expect(last().headers["analytics-consent"]).toBeUndefined();
+      expect(last().headers.authorization).toBe(
+        `Bearer ${session.accessToken}`,
+      );
+    } finally {
+      allowlist.length -= 2;
+    }
   });
 
   it("answers 413 for a Content-Length above the body cap, sending nothing upstream", async () => {

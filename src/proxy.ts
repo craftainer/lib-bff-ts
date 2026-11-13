@@ -56,6 +56,18 @@ function dropResponseHeader(name: string): boolean {
   );
 }
 
+/**
+ * Headers the BFF alone sets upstream. Never copied from the browser, even if
+ * someone adds one to {@link FORWARDED_REQUEST_HEADERS} by mistake: they are
+ * deleted before the BFF sets its own value. Keys are lower-case (Node
+ * lower-cases inbound names, so a `Analytics-Consent` / `ANALYTICS-CONSENT`
+ * variant arrives here as `analytics-consent`).
+ */
+const BFF_OWNED_REQUEST_HEADERS: readonly string[] = [
+  "authorization",
+  "analytics-consent",
+];
+
 function upstreamRequestHeaders(
   inbound: IncomingHttpHeaders,
   token: string,
@@ -69,6 +81,9 @@ function upstreamRequestHeaders(
     if (value !== undefined) {
       out[name] = value;
     }
+  }
+  for (const name of BFF_OWNED_REQUEST_HEADERS) {
+    delete out[name];
   }
   out.authorization = `Bearer ${token}`;
   if (consent === true) {
