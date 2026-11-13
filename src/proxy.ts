@@ -163,8 +163,9 @@ async function mountUpstream(
     if (!rawPath.startsWith(prefix) || !isSafeSuffix(suffix)) {
       return reply.code(400).send({ error: "invalid_path" });
     }
-    // Rejects with a BffHttpError (401 session_expired, 503) the app's error
-    // handler maps, or a plain Error (token exchange is unsupported) -> 500.
+    // Rejects with a BffHttpError (401 session_expired, 502
+    // token_exchange_failed, 503) the app's error handler maps. On failure the
+    // request never goes upstream, and never with another token.
     const token = await request.bffSession.accessTokenFor(name);
     return reply.from(basePath + (suffix === "" ? "/" : suffix), {
       rewriteRequestHeaders: (req, headers) =>

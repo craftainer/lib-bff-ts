@@ -17,9 +17,11 @@ It is ESM-only TypeScript, created from
 every instance). The design is recorded in
 [ADR 0002](docs/adrs/0002-bff-design.md) (sessions and OIDC),
 [ADR 0003](docs/adrs/0003-well-known-endpoints.md) (well-known endpoints) and
-[ADR 0004](docs/adrs/0004-analytics-endpoint.md) (analytics) and
+[ADR 0004](docs/adrs/0004-analytics-endpoint.md) (analytics),
 [ADR 0005](docs/adrs/0005-csp-nonce-and-api-cache-control.md) (CSP nonce, API
-caching); the security
+caching) and
+[ADR 0008](docs/adrs/0008-per-audience-token-exchange.md) (per-audience token
+exchange); the security
 requirements are in [NFR-0001](docs/nfrs/NFR-0001-session-security.md) and
 [NFR-0002](docs/nfrs/NFR-0002-analytics-privacy.md).
 
@@ -280,15 +282,51 @@ recording in **every** mode, including `implied`.
 Names match `[a-z][a-z0-9-]*`; `url` is http(s) with no credentials, query or
 fragment; `methods` is a non-empty subset of `GET HEAD POST PUT PATCH DELETE
 OPTIONS`. `stream: true` disables the body timeout for server-sent events.
-`tokenExchange: true` (RFC 8693) is accepted by the schema but not
-implemented: it fails at use.
+`tokenExchange: true` turns on per-audience token exchange for that upstream
+(see below); it defaults to `false`.
+
+#### Token exchange (RFC 8693)
+
+Without `tokenExchange`, every upstream receives the session's own access token,
+so any upstream can replay it at the others. With `tokenExchange: true` the BFF
+exchanges the session's access token at the IdP's token endpoint for one
+restricted to that upstream's `audience` (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
+`subject_token_type` and `requested_token_type` `access_token`, `audience`),
+authenticating as the confidential client, and forwards that instead
+(ADR 0008).
+
+- The exchanged token is cached in the session per audience until
+  `expires_in` minus 30 s, then exchanged again. Concurrent requests of a
+  process for the same session and audience share one exchange; replicas may
+  each exchange once.
+- It fails closed: when the exchange fails nothing goes upstream and the
+  session's own token is never sent in its place. `502 token_exchange_failed`
+  when the IdP refuses or answers with an unusable token (including a JWT
+  whose `aud` lacks the audience), `503 idp_unavailable` when it cannot be
+  reached or reports a server error. The session survives both. The warn-level
+  security event `token_exchange_failed` carries `sub`, `audience` and a
+  reason, never a token.
+- The IdP must allow it. For Keycloak 26.2 or later (standard token exchange
+  v2): turn on "Standard token exchange" on the BFF's client (confidential),
+  and make sure the BFF client's default scopes put each upstream's audience
+  client in the token (audience resolve through role scope mappings, or an
+  Audience mapper); the `audience` parameter only narrows. Do not request
+  `offline_access` with exchange on.
+
+**Migrating:** nothing changes for existing configs. To adopt, set the IdP up
+as above, then set `"tokenExchange": true` on each upstream and check that the
+upstream accepts the audience-restricted token. Roll back by setting it to
+`false`. `SessionData` gains an optional `exchanged` field: sessions written by
+older versions load unchanged, and a session written by this version is read by
+an older one (the field is ignored there).
 
 Each upstream is mounted at `/api/<name>/*` with the prefix stripped:
 
 - No session: `401 unauthorized`, checked **before** the method (`405` with
   an `Allow` header, for a method not in `methods`).
-- The request is forwarded with `Authorization: Bearer <access token>`,
-  refreshed first when it is about to expire. A refresh the IdP rejects
+- The request is forwarded with `Authorization: Bearer <access token>` (the
+  upstream's exchanged token when `tokenExchange` is on), refreshed first when
+  it is about to expire. A refresh the IdP rejects
   ends the session (`401 session_expired`); an IdP outage keeps it (`503`).
 - The raw (still percent-encoded) path goes upstream untouched; `.`/`..`
   segments (also encoded) and backslashes are rejected with `400
@@ -315,7 +353,8 @@ Security-relevant events are logged as structured JSON,
 IDs or authorization codes. Level `info`: `login_started`, `login_success`,
 `logout`, `backchannel_logout`. Level `warn`: `login_failed`, `refresh_failed`,
 `csrf_rejected`, `origin_rejected`, `backchannel_logout_rejected`,
-`rate_limited` and `token_revocation_failed` (the best-effort refresh-token
+`rate_limited`, `token_exchange_failed` (see the API proxy) and
+`token_revocation_failed` (the best-effort refresh-token
 revocation at logout, or of an orphaned token after a lost refresh race, failed
 or timed out; the logout itself is never blocked).
 

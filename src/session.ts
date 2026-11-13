@@ -1,6 +1,7 @@
 import cookie from "@fastify/cookie";
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import fp from "fastify-plugin";
+import { decodeJwt } from "jose";
 import * as client from "openid-client";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { BffConfig } from "./config.ts";
@@ -31,6 +32,13 @@ export interface BffSession {
    * Returns an access token for the named upstream, refreshing it first when
    * it is about to expire. When the refresh fails the session is destroyed
    * and this rejects with a 401 error.
+   *
+   * For an upstream with `tokenExchange: true` the token is not the session's
+   * own: it is an audience-restricted token the IdP issued for the upstream's
+   * `audience` by RFC 8693 token exchange, cached in the session. When the
+   * exchange fails this rejects (502 `token_exchange_failed`, or 503
+   * `idp_unavailable` when the IdP cannot be reached) and never falls back to
+   * the session's own token.
    */
   accessTokenFor(upstream: string): Promise<string>;
 }
@@ -145,12 +153,44 @@ export function clearSessionCookie(
   void reply.clearCookie(config.session.cookieName, cookieAttributes("strict"));
 }
 
+/** RFC 8693 section 2.1 / 3: the grant type and the access-token type identifier. */
+const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
+
+/** The longest storing an exchanged token waits for the session lock. */
+const CACHE_LOCK_WAIT_MS = 2000;
+
+/** Exchanges in flight in this process, keyed by session, session version and audience. */
+type Flights = Map<string, Promise<string>>;
+
+/** A log-safe reason for a failure that is not an OAuth error response: the error's class and fixed code. */
+function errorName(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "unknown";
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code)
+    ? `${error.name}:${code}`
+    : error.name;
+}
+
+/** The `aud` of a JWT as a list, or undefined when the token is not a decodable JWT. */
+function jwtAudiences(token: string): string[] | undefined {
+  try {
+    const { aud } = decodeJwt(token);
+    return aud === undefined ? [] : typeof aud === "string" ? [aud] : aud;
+  } catch {
+    return undefined;
+  }
+}
+
 function createSession(
   app: { bffStore: SessionStore; bffOidc: OidcClient },
   config: BffConfig,
   id: string,
   initial: SessionData,
   log: Parameters<typeof securityLog>[0],
+  flights: Flights,
 ): BffSession {
   const store = app.bffStore;
   let data = initial;
@@ -281,6 +321,205 @@ function createSession(
     }
   }
 
+  /** The cached exchanged token for `audience`, while it is not about to expire. */
+  function readCached(d: SessionData, audience: string): string | undefined {
+    const entry =
+      d.exchanged !== undefined && Object.hasOwn(d.exchanged, audience)
+        ? d.exchanged[audience]
+        : undefined;
+    return entry !== undefined &&
+      entry.expiresAt - nowSeconds() > config.session.accessTokenSkewSeconds
+      ? entry.accessToken
+      : undefined;
+  }
+
+  /** A failed exchange: logged without any token, and never answered with the session's own. */
+  function exchangeFailed(
+    d: SessionData,
+    audience: string,
+    reason: string,
+    status: 502 | 503,
+  ): never {
+    securityLog(log, "token_exchange_failed", { sub: d.sub, audience, reason });
+    throw new BffHttpError(
+      status,
+      status === 502 ? "token_exchange_failed" : "idp_unavailable",
+    );
+  }
+
+  /**
+   * The request to the IdP. A definitive answer (an OAuth error, an unusable
+   * response) is a misconfiguration or a denial: 502. Only a failure to reach
+   * the IdP (network error, timeout) is an outage: 503.
+   */
+  async function requestExchange(
+    d: SessionData,
+    audience: string,
+  ): Promise<client.TokenEndpointResponse> {
+    let configuration: client.Configuration;
+    try {
+      configuration = await app.bffOidc.configuration();
+    } catch (error) {
+      return exchangeFailed(d, audience, errorName(error), 503);
+    }
+    try {
+      return await client.genericGrantRequest(
+        configuration,
+        TOKEN_EXCHANGE_GRANT,
+        {
+          subject_token: d.accessToken,
+          subject_token_type: ACCESS_TOKEN_TYPE,
+          requested_token_type: ACCESS_TOKEN_TYPE,
+          audience,
+        },
+      );
+    } catch (error) {
+      if (error instanceof client.ResponseBodyError) {
+        // The code comes from the IdP: log it only when it looks like one.
+        const reason = /^[a-z_]{1,64}$/.test(error.error)
+          ? error.error
+          : "invalid_error";
+        // An IdP that says it is struggling is an outage, not a denial.
+        const outage =
+          error.status >= 500 ||
+          error.error === "server_error" ||
+          error.error === "temporarily_unavailable";
+        return exchangeFailed(d, audience, reason, outage ? 503 : 502);
+      }
+      // An IdP answer that is not an OAuth error (a gateway page) keeps the
+      // HTTP response as the cause: 5xx is an outage.
+      const serverError =
+        error instanceof client.ClientError &&
+        error.cause instanceof Response &&
+        error.cause.status >= 500;
+      // A failed fetch is a TypeError without a code (argument errors have one).
+      const unreachable =
+        serverError ||
+        (error instanceof TypeError &&
+          (error as { code?: unknown }).code === undefined) ||
+        (error instanceof client.ClientError &&
+          (error.code === "OAUTH_TIMEOUT" || error.code === "OAUTH_ABORT"));
+      return exchangeFailed(
+        d,
+        audience,
+        errorName(error),
+        unreachable ? 503 : 502,
+      );
+    }
+  }
+
+  /**
+   * Stores the exchanged token in the session, best effort: it waits briefly
+   * for the lock (parallel exchanges for other audiences, a refresh), and when
+   * it cannot write, the token serves only the request that asked and a later
+   * request exchanges again. Only a gone session (401) is an error.
+   */
+  async function storeExchanged(
+    audience: string,
+    token: string,
+    expiresAt: number,
+  ): Promise<void> {
+    const { ttlMs, waitMs, pollMs } = config.session.refreshLock;
+    const deadline = Date.now() + Math.min(waitMs, CACHE_LOCK_WAIT_MS);
+    try {
+      let lock = await store.acquireLock(id, ttlMs);
+      while (lock === undefined && Date.now() < deadline) {
+        await sleep(pollMs);
+        lock = await store.acquireLock(id, ttlMs);
+      }
+      if (lock === undefined) {
+        return;
+      }
+      try {
+        // Merge into the session as it is now (a refresh may have run meanwhile).
+        const latest = await reread();
+        const now = nowSeconds();
+        const kept = Object.entries(latest.exchanged ?? {}).filter(
+          ([key, entry]) => key !== audience && entry.expiresAt > now,
+        );
+        const next: SessionData = {
+          ...latest,
+          exchanged: {
+            ...Object.fromEntries(kept),
+            [audience]: { accessToken: token, expiresAt },
+          },
+        };
+        await store.replace(
+          id,
+          next,
+          sessionTtlSeconds(config, next, now) * 1000,
+          latest.version,
+        );
+      } finally {
+        await store.releaseLock(id, lock).catch((error: unknown) => {
+          log.error({ err: error }, "refresh lock release failed");
+        });
+      }
+    } catch (error) {
+      if (error instanceof BffHttpError) {
+        throw error;
+      }
+      log.error({ err: error }, "caching the exchanged token failed");
+    }
+  }
+
+  /** RFC 8693 exchange of the session's access token for one restricted to `audience`. */
+  async function exchange(
+    base: SessionData,
+    audience: string,
+  ): Promise<string> {
+    // The lifetime counts from the request, not from when the answer is stored.
+    const requestedAt = nowSeconds();
+    const response = await requestExchange(base, audience);
+    const issuedType = response["issued_token_type"];
+    if (
+      response.token_type !== "bearer" ||
+      (issuedType !== undefined && issuedType !== ACCESS_TOKEN_TYPE)
+    ) {
+      return exchangeFailed(base, audience, "unexpected_token_type", 502);
+    }
+    const token = response.access_token;
+    // An IdP that hands the subject token straight back restricted nothing.
+    if (token === base.accessToken) {
+      return exchangeFailed(base, audience, "token_not_exchanged", 502);
+    }
+    // A JWT that does not name the audience is useless to the upstream, and
+    // shows the IdP did not restrict it. (Opaque tokens cannot be checked.)
+    const audiences = jwtAudiences(token);
+    if (audiences !== undefined && !audiences.includes(audience)) {
+      return exchangeFailed(base, audience, "audience_missing", 502);
+    }
+    const lifetime = response.expires_in;
+    // No usable lifetime: serve this request, cache nothing.
+    if (
+      lifetime !== undefined &&
+      lifetime > config.session.accessTokenSkewSeconds
+    ) {
+      await storeExchanged(audience, token, requestedAt + lifetime);
+    }
+    return token;
+  }
+
+  async function exchangedTokenFor(audience: string): Promise<string> {
+    data = await current();
+    const hit = readCached(data, audience);
+    if (hit !== undefined) {
+      return hit;
+    }
+    // Requests of this process for the same session state and audience share
+    // one exchange. Replicas may each exchange once; the first to store wins
+    // and the others only serve their own token to the request that asked.
+    const key = `${id}\0${data.version}\0${audience}`;
+    let flight = flights.get(key);
+    if (flight === undefined) {
+      flight = exchange(data, audience).finally(() => {
+        flights.delete(key);
+      });
+      flights.set(key, flight);
+    }
+    return flight;
+  }
+
   return {
     id,
     get data(): SessionData {
@@ -295,9 +534,7 @@ function createSession(
         throw new Error(`unknown upstream: ${upstream}`);
       }
       if (target.tokenExchange) {
-        throw new Error(
-          "per-upstream token exchange (RFC 8693) is not implemented",
-        );
+        return exchangedTokenFor(target.audience);
       }
       data = await current();
       return data.accessToken;
@@ -333,6 +570,7 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
   }
   app.decorate("bffOidc", createOidcClient(config));
   app.decorateRequest("bffSession", null);
+  const flights: Flights = new Map();
 
   app.addHook("onClose", async () => {
     if (owned) {
@@ -362,7 +600,14 @@ const session: FastifyPluginAsync<BffConfig> = async (app, config) => {
       return;
     }
     await app.bffStore.touch(id, sessionTtlSeconds(config, data, now));
-    request.bffSession = createSession(app, config, id, data, request.log);
+    request.bffSession = createSession(
+      app,
+      config,
+      id,
+      data,
+      request.log,
+      flights,
+    );
   });
 };
 

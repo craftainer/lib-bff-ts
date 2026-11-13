@@ -43,12 +43,6 @@ beforeAll(async () => {
           audience: "api",
           methods: ["GET"],
         },
-        xchg: {
-          url: up.url,
-          audience: "api",
-          methods: ["GET"],
-          tokenExchange: true,
-        },
       }),
     },
   });
@@ -478,17 +472,6 @@ describe("authentication", () => {
     expect(res.statusCode).toBe(503);
     await down.app.close();
     await store.put(sessionId, session, 600);
-  });
-
-  it("answers 500 and logs when token exchange is configured", async () => {
-    const res = await get("/api/xchg/x");
-    expect(res.statusCode).toBe(500);
-    expect(res.json()).toEqual({ error: "internal_error" });
-    expect(
-      bff.logs.some(
-        (line) => line["msg"] === "request failed" && line["level"] === 50,
-      ),
-    ).toBe(true);
   });
 });
 

@@ -20,6 +20,13 @@ export interface SessionData {
   /** Epoch seconds; the session never outlives this, however often it is used. */
   absoluteExpiresAt: number;
   /**
+   * Audience-restricted tokens from RFC 8693 token exchange, by audience
+   * (upstreams with `tokenExchange: true`). Absent until the first exchange.
+   * Never sent to the browser.
+   */
+  exchanged?:
+    Record<string, { accessToken: string; expiresAt: number }> | undefined;
+  /**
    * Fencing token: 0 at login, bumped by every {@link SessionStore.replace}.
    * A token refresh only lands when the version it started from is still current.
    */
@@ -45,6 +52,12 @@ const sessionDataSchema: z.ZodType<SessionData> = z.object({
   accessExpiresAt: z.number(),
   createdAt: z.number(),
   absoluteExpiresAt: z.number(),
+  exchanged: z
+    .record(
+      z.string(),
+      z.object({ accessToken: z.string(), expiresAt: z.number() }),
+    )
+    .optional(),
   version: z.number().int().nonnegative(),
 });
 
