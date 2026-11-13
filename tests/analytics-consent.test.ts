@@ -40,7 +40,7 @@ describe("consent endpoints", () => {
     const b = await start();
     const res = await consent(b, { analytics: true });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ analytics: true });
+    expect(res.json()).toEqual({ analytics: true, decided: true });
     expect(res.headers["cache-control"]).toBe("no-store");
     const raw = String(res.headers["set-cookie"]);
     expect(raw.split(";")[0]).toBe("__Host-Http-consent=1");
@@ -56,7 +56,7 @@ describe("consent endpoints", () => {
   it('records a decline as an explicit "0" cookie with the same attributes', async () => {
     const b = await start();
     const res = await consent(b, { analytics: false });
-    expect(res.json()).toEqual({ analytics: false });
+    expect(res.json()).toEqual({ analytics: false, decided: true });
     const raw = String(res.headers["set-cookie"]);
     expect(raw.split(";")[0]).toBe("__Host-Http-consent=0");
     expect(raw).toContain(`Max-Age=${CONSENT_MAX_AGE_SECONDS}`);
@@ -86,13 +86,37 @@ describe("consent endpoints", () => {
         url: "/bff/consent",
         headers: cookie === undefined ? {} : { cookie },
       });
-    expect((await get()).json()).toEqual({ analytics: false });
+    // `analytics` keeps its meaning (granted or not); `decided` is new.
+    expect((await get()).json()).toEqual({ analytics: false, decided: false });
     expect((await get("__Host-Http-consent=1")).json()).toEqual({
       analytics: true,
+      decided: true,
     });
-    expect((await get("__Host-Http-consent=yes")).json()).toEqual({
+    expect((await get("__Host-Http-consent=0")).json()).toEqual({
       analytics: false,
+      decided: true,
     });
+    // Anything but a stored 1 or 0 is not an answer.
+    for (const junk of ["yes", "2", ""]) {
+      expect((await get(`__Host-Http-consent=${junk}`)).json()).toEqual({
+        analytics: false,
+        decided: false,
+      });
+    }
+  });
+
+  it("GET decided follows a POST round trip, accept and decline", async () => {
+    const b = await start();
+    for (const analytics of [true, false]) {
+      const set = await consent(b, { analytics });
+      const cookie = String(set.headers["set-cookie"]).split(";")[0] as string;
+      const res = await b.app.inject({
+        method: "GET",
+        url: "/bff/consent",
+        headers: { cookie },
+      });
+      expect(res.json()).toEqual({ analytics, decided: true });
+    }
   });
 
   it("sets request.bffAnalyticsConsent only for a granted cookie (I6)", async () => {

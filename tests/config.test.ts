@@ -25,7 +25,7 @@ describe("loadConfig", () => {
   it("applies the documented defaults", () => {
     const config = loadConfig({ ...base, EMPTY: "", BFF_UPSTREAMS: "" });
     expect(config).toMatchObject({
-      production: false,
+      production: true,
       port: 8080,
       host: "0.0.0.0",
       staticDir: null,
@@ -141,6 +141,7 @@ describe("loadConfig", () => {
   it("allows plain http for a loopback origin and with OIDC_ALLOW_INSECURE", () => {
     const config = loadConfig({
       ...base,
+      NODE_ENV: "development",
       PUBLIC_ORIGIN: "http://localhost:8081/",
       OIDC_ISSUER: "http://localhost:8080/realms/x/",
       OIDC_ALLOW_INSECURE: "true",
@@ -200,7 +201,62 @@ describe("loadConfig", () => {
         SESSION_STORE_ALLOW_PLAINTEXT: "true",
         OIDC_ALLOW_INSECURE: "true",
       }),
-    ).toContain("OIDC_ALLOW_INSECURE: refused when NODE_ENV=production");
+    ).toContain(
+      "OIDC_ALLOW_INSECURE: refused unless NODE_ENV is development or test",
+    );
+  });
+
+  describe("NODE_ENV fails safe", () => {
+    const insecure = {
+      ...base,
+      PUBLIC_ORIGIN: "http://localhost:3000",
+      OIDC_ISSUER: "http://localhost:8080/realms/x",
+      OIDC_ALLOW_INSECURE: "true",
+      SESSION_STORE_URL: "redis://localhost:6379",
+    };
+
+    it("treats unset, empty and unknown values as production", () => {
+      for (const NODE_ENV of [
+        undefined,
+        "",
+        "prod",
+        "staging",
+        "Development",
+        " test",
+      ]) {
+        const env = { ...insecure, NODE_ENV };
+        expect(
+          loadConfig({ ...base, NODE_ENV }).production,
+          `${NODE_ENV}`,
+        ).toBe(true);
+        const found = issues(env);
+        expect(found, `${NODE_ENV}`).toContain(
+          "OIDC_ALLOW_INSECURE: refused unless NODE_ENV is development or test",
+        );
+        expect(found.join("\n"), `${NODE_ENV}`).toContain(
+          "PUBLIC_ORIGIN: must be https",
+        );
+      }
+    });
+
+    it("requires SECURITY_TXT_EXPIRES when NODE_ENV is unset", () => {
+      expect(
+        issues({ ...base, SECURITY_TXT_CONTACT: "mailto:sec@example.com" }),
+      ).toContain(
+        "SECURITY_TXT_EXPIRES: required in production when SECURITY_TXT_CONTACT is set (RFC 9116)",
+      );
+    });
+
+    it("relaxes only for an explicit development or test", () => {
+      for (const NODE_ENV of ["development", "test"]) {
+        const config = loadConfig({ ...insecure, NODE_ENV });
+        expect(config.production, NODE_ENV).toBe(false);
+        expect(config.publicOrigin).toBe("http://localhost:3000");
+      }
+      expect(loadConfig({ ...base, NODE_ENV: "production" }).production).toBe(
+        true,
+      );
+    });
   });
 
   it("requires the full discovery URL", () => {
@@ -402,6 +458,7 @@ describe("loadConfig", () => {
     expect(
       issues({
         ...base,
+        NODE_ENV: "development",
         SECURITY_TXT_CONTACT: "mailto:a@b.c\nContact: https://evil",
         SECURITY_TXT_POLICY: "https://a.b/p\nContact: https://evil",
         SECURITY_TXT_PREFERRED_LANGUAGES: "en\r\nX: y",

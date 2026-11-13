@@ -160,15 +160,19 @@ const analytics: FastifyPluginAsync<BffConfig> = async (app, config) => {
         parsed.data.analytics ? "1" : "0",
         { ...consentCookie(), maxAge: CONSENT_MAX_AGE_SECONDS },
       );
-      return { analytics: parsed.data.analytics };
+      return { analytics: parsed.data.analytics, decided: true };
     },
   );
 
-  app.get(
-    "/bff/consent",
-    { config: { rateLimit: limit } },
-    async (request) => ({ analytics: request.bffAnalyticsConsent === true }),
-  );
+  app.get("/bff/consent", { config: { rateLimit: limit } }, async (request) => {
+    const stored = request.cookies[CONSENT_COOKIE_NAME];
+    // `decided` tells "never answered" from "declined": only a stored
+    // `1` or `0` is an answer; anything else counts as undecided.
+    return {
+      analytics: request.bffAnalyticsConsent === true,
+      decided: stored === "1" || stored === "0",
+    };
+  });
 };
 
 /** Analytics intake and consent state. Register after `auth` (it owns the rate limiter). */

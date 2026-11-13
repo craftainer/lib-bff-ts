@@ -70,7 +70,10 @@ export interface SecurityTxtConfig {
 
 /** The validated, typed configuration every plugin receives. */
 export interface BffConfig {
-  /** True when `NODE_ENV=production`. */
+  /**
+   * True unless `NODE_ENV` is exactly `development` or `test`. Fail-safe: an
+   * unset, empty, misspelled or unknown `NODE_ENV` is production-strict.
+   */
   production: boolean;
   port: number;
   host: string;
@@ -361,7 +364,7 @@ function publicOrigin(
     (production || !LOOPBACK_HOSTS.has(url.hostname))
   ) {
     issues.push(
-      "PUBLIC_ORIGIN: must be https (plain http only for localhost outside production)",
+      "PUBLIC_ORIGIN: must be https (plain http only for localhost when NODE_ENV is development or test)",
     );
   }
   return url.origin;
@@ -463,6 +466,12 @@ function checkSecurityTxt(
   }
 }
 
+/** The only `NODE_ENV` values that relax the production rules. */
+const NON_PRODUCTION_ENVS: ReadonlySet<string> = new Set([
+  "development",
+  "test",
+]);
+
 /**
  * Validates the environment and returns the typed configuration. Empty
  * variables count as unset. Throws {@link ConfigError} listing every problem.
@@ -482,10 +491,13 @@ export function loadConfig(env: Record<string, string | undefined>): BffConfig {
   }
   const e = result.data;
   const issues: string[] = [];
-  const production = e.NODE_ENV === "production";
+  // Fail safe: only an explicit development/test opts out of the strict rules.
+  const production = !NON_PRODUCTION_ENVS.has(e.NODE_ENV ?? "");
 
   if (production && e.OIDC_ALLOW_INSECURE) {
-    issues.push("OIDC_ALLOW_INSECURE: refused when NODE_ENV=production");
+    issues.push(
+      "OIDC_ALLOW_INSECURE: refused unless NODE_ENV is development or test",
+    );
   }
   if (e.SESSION_IDLE_SECONDS > e.SESSION_ABSOLUTE_SECONDS) {
     issues.push(
