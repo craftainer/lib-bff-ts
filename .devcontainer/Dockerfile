@@ -5,13 +5,13 @@
 # "Instance extension points".
 
 # renovate: datasource=github-releases depName=j178/prek
-ARG PREK_VERSION=0.5.9
+ARG PREK_VERSION=0.5.10
 
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.317
+ARG CLAUDE_CODE_VERSION=2.1.319
 
 # renovate: datasource=github-releases depName=edouard-claude/snip
-ARG SNIP_VERSION=0.25.2
+ARG SNIP_VERSION=0.26.0
 
 # renovate: datasource=github-releases depName=cli/cli
 ARG GH_VERSION=2.103.3

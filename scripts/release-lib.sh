@@ -5,7 +5,7 @@
 # 11.5.1; the Node in .devcontainer/Dockerfile may ship an older npm, so every
 # step runs this exact one (see use_npm).
 # renovate: datasource=npm depName=npm
-NPM_VERSION=11.21.1
+NPM_VERSION=11.19.1
 
 # Container images, pinned by tag and digest (the digest is what is pulled; the
 # tag is for humans and Renovate, which bumps both: see the regex manager in
